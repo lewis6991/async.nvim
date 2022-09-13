@@ -1,2 +1,2 @@
 # async.nvim
-Small aync library for Neovim plugins
+Small async library for Neovim plugins
