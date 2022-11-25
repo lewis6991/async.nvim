@@ -1,3 +1,6 @@
+--- Small async library for Neovim plugins
+--- @module async
+
 local M = {}
 
 -- Coroutine.running() was changed between Lua 5.1 and 5.2:
@@ -53,7 +56,8 @@ end
 --- Use this to create a function which executes in an async context but
 --- called from a non-async context. Inherently this cannot return anything
 --- since it is non-blocking
---- @param argc number The number of arguments of func. Defaults to 0
+--- @tparam function func
+--- @tparam number argc The number of arguments of func. Defaults to 0
 function M.sync(func, argc)
   argc = argc or 0
   return function(...)
@@ -67,7 +71,7 @@ end
 
 --- Create a function which executes in an async context but
 --- called from a non-async context.
---- @param func function
+--- @tparam function func
 function M.void(func)
   return function(...)
     if coroutine.running() ~= main_co_or_nil then
@@ -78,9 +82,9 @@ function M.void(func)
 end
 
 --- Creates an async function with a callback style function.
---- @param func function A callback style function to be converted. The last argument must be the callback.
---- @param argc number The number of arguments of func. Must be included.
---- @param protected boolean call the function in protected mode (like pcall)
+--- @tparam function func A callback style function to be converted. The last argument must be the callback.
+--- @tparam integer argc The number of arguments of func. Must be included.
+--- @tparam boolean protected call the function in protected mode (like pcall)
 --- @return function Returns an async function
 function M.wrap(func, argc, protected)
   assert(argc)
@@ -92,8 +96,11 @@ function M.wrap(func, argc, protected)
   end
 end
 
---- @param n integer Max number of thunks to run concurrently
---- @param interrupt_check fun(): boolean Function to abort thunks between calls
+--- Run a collection of async functions (`thunks`) concurrently and return when
+--- all have finished.
+--- @tparam integer n Max number of thunks to run concurrently
+--- @tparam function interrupt_check Function to abort thunks between calls
+--- @tparam function[] thunks
 function M.join(n, interrupt_check, thunks)
   local function run(finish)
     if #thunks == 0 then
@@ -127,6 +134,8 @@ function M.join(n, interrupt_check, thunks)
 end
 
 --- Partially applying arguments to an async function
+--- @tparam function fn
+--- @param ... arguments to apply to `fn`
 function M.curry(fn, ...)
   local args = {...}
   local nargs = select('#', ...)
