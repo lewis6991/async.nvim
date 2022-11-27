@@ -62,7 +62,7 @@ local run_job_a = a.wrap(run_job, 3)
 
 Now we need to create a top level function to initialize the async context. To do this we can use `void` or `sync`.
 
-Note: the main difference between `void` and `sync` is that `sync` functions can be called with a callback, like the original `run_job` in a non-async context, however the user must provide the number of agurments.
+Note: the main difference between `void` and `sync` is that `sync` functions can be called with a callback, like the original `run_job` in a non-async context, however the user must provide the number of arguments.
 
 For this example we will use `void`:
 
