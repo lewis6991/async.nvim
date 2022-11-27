@@ -1,6 +1,8 @@
 # async.nvim
 Small async library for Neovim plugins
 
+[API documentation](async.md)
+
 ## Example
 
 Take the current function that uses a callback style function to run a system process.
@@ -19,8 +21,8 @@ end
 
 If we want to emulate something like:
 
-```lua
-echo foo && echo bar && echo baz
+```bash
+echo 'foo' && echo 'bar' && echo 'baz'
 ```
 
 Would need to be implemented as:
