@@ -165,10 +165,10 @@ end
 
 --- Run a collection of async functions (`thunks`) concurrently and return when
 --- all have finished.
+--- @tparam function[] thunks
 --- @tparam integer n Max number of thunks to run concurrently
 --- @tparam function interrupt_check Function to abort thunks between calls
---- @tparam function[] thunks
-function M.join(n, interrupt_check, thunks)
+function M.join(thunks, n, interrupt_check )
   local function run(finish)
     if #thunks == 0 then
       return finish()

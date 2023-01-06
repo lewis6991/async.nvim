@@ -44,16 +44,16 @@ Creates an async function with a callback style function.
 * `protected` (`boolean`):  call the function in protected mode (like pcall)
 
 ---
-### `join(n, interrupt_check, thunks)`
+### `join(thunks, n, interrupt_check)`
 
 Run a collection of async functions (`thunks`) concurrently and return when
  all have finished.
 
 #### Parameters:
 
+* `thunks` (`function[]`):
 * `n` (`integer`):  Max number of thunks to run concurrently
 * `interrupt_check` (`function`):  Function to abort thunks between calls
-* `thunks` (`function[]`):
 
 ---
 ### `curry(fn, ...)`
