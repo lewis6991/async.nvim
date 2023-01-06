@@ -3,7 +3,7 @@
 
 -- Store all the async threads in a weak table so we don't prevent them from
 -- being garbage collected
-local threads = setmetatable({}, { __mode = 'kv' })
+local handles = setmetatable({}, { __mode = 'k' })
 
 local M = {}
 
@@ -21,25 +21,57 @@ local M = {}
 --- @return boolean|nil
 function M.running()
   local current = coroutine.running()
-  if current and threads[current] then
+  if current and handles[current] then
     return true
   end
 end
 
-local function execute(func, callback, ...)
+local Handle = {}
+
+function Handle.new(func)
   local co = coroutine.create(func)
-  threads[co] = true
+  local handle setmetatable({ co = co }, { __index = {
+    cancel = function(self, cb)
+      self.cancelled_cb = cb or function() end
+    end
+  }})
+  handles[co] = handle
+  return handle
+end
+
+-- Analogous to uv.close
+function Handle:cancel(callback)
+  vim.validate{ callback = { callback , 'function', true } }
+  self.cancelled_cb = callback or function() end
+end
+
+-- Analogous to uv.is_closing
+function Handle:is_cancelled()
+  return self.cancelled_cb == nil
+end
+
+local function execute(func, callback, ...)
+  vim.validate{
+    func = { func, 'function' },
+    callback = { callback , 'function', true }
+  }
+  local handle = Handle.new(func)
 
   local function step(...)
-    local ret = {coroutine.resume(co, ...)}
+    if handle.cancelled_cb then
+      handle.cancelled_cb()
+      return
+    end
+
+    local ret = {coroutine.resume(handle.co, ...)}
     local stat, nargs, protected, err_or_fn = unpack(ret)
 
     if not stat then
       error(string.format("The coroutine failed with this message: %s\n%s",
-        err_or_fn, debug.traceback(co)))
+        err_or_fn, debug.traceback(handle.co)))
     end
 
-    if coroutine.status(co) == 'dead' then
+    if coroutine.status(handle.co) == 'dead' then
       if callback then
         callback(unpack(ret, 4))
       end
@@ -65,6 +97,7 @@ local function execute(func, callback, ...)
   end
 
   step(...)
+  return handle
 end
 
 --- Use this to create a function which executes in an async context but
@@ -73,13 +106,17 @@ end
 --- @tparam function func
 --- @tparam number argc The number of arguments of func. Defaults to 0
 function M.create(func, argc)
+  vim.validate{
+    func = { func , 'function' },
+    argc = { argc, 'number', true }
+  }
   argc = argc or 0
   return function(...)
     if M.running() then
       return func(...)
     end
     local callback = select(argc+1, ...)
-    execute(func, callback, unpack({...}, 1, argc))
+    return execute(func, callback, unpack({...}, 1, argc))
   end
 end
 
@@ -87,11 +124,12 @@ end
 --- called from a non-async context.
 --- @tparam function func
 function M.void(func)
+  vim.validate{ func = { func , 'function' } }
   return function(...)
     if M.running() then
       return func(...)
     end
-    execute(func, nil, ...)
+    return execute(func, nil, ...)
   end
 end
 
@@ -101,7 +139,10 @@ end
 --- @tparam boolean protected call the function in protected mode (like pcall)
 --- @return function Returns an async function
 function M.wrap(func, argc, protected)
-  assert(argc)
+  vim.validate{
+    argc = { argc, 'number' },
+    protected = { protected, 'boolean', true }
+  }
   return function(...)
     if not M.running() then
       return func(...)
