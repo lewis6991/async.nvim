@@ -86,3 +86,45 @@ main()
 
 We can now call `run_job_a` in linear imperative fashion without needing to define callbacks.
 The arguments provided to the callback in the original function are simply returned by the async version.
+
+## The `async_t` handle
+
+This library supports cancelling async functions that are currently running. This is done via the `async_t` handle interface.
+The handle must provide the methods `cancel()` and `is_cancelled()`, and the purpose of these is to allow the cancelled async function to run any cleanup and free any resources it has created.
+
+### Example use with `vim.loop.spawn`:
+
+Typically applications to `vim.loop.spawn` make use of `stdio` pipes for communicating. This involves creating `uv_pipe_t` objects.
+If a job is cancelled then these objects must be closed.
+
+```lua
+local function run_job = async.wrap(function(cmd, args, callback)
+  local stdout = vim.loop.new_pipe(false)
+
+  local raw_handle
+  raw_handle = vim.loop.spawn(cmd, { args  = args, stdio = { nil, stdout }},
+    function(code)
+      stdout:close()
+      raw_handle:close()
+      callback(code)
+    end
+  )
+
+  local handle = {}
+
+  handle.is_cancelled = function(_)
+    return raw_handle.is_closing()
+  end
+
+  handle.cancel = function(_, cb)
+    raw_handle:close(function()
+        stdout:close(cb)
+    end)
+  end
+
+  return handle
+end)
+```
+
+So even if `run_job` is called in a deep function stack, calling `cancel()` on any parent async function will allow the job to be cancelled safely.
+
