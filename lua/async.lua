@@ -26,28 +26,10 @@ function M.running()
   end
 end
 
-local Handle = {}
-
-function Handle.new(func)
-  local co = coroutine.create(func)
-  local handle setmetatable({ co = co }, { __index = {
-    cancel = function(self, cb)
-      self.cancelled_cb = cb or function() end
-    end
-  }})
-  handles[co] = handle
-  return handle
-end
-
--- Analogous to uv.close
-function Handle:cancel(callback)
-  vim.validate{ callback = { callback , 'function', true } }
-  self.cancelled_cb = callback or function() end
-end
-
--- Analogous to uv.is_closing
-function Handle:is_cancelled()
-  return self.cancelled_cb == nil
+local function is_async_handle(handle)
+  if handle and handle.cancel and handle.is_cancelled then
+    return true
+  end
 end
 
 local function execute(func, callback, ...)
@@ -55,23 +37,51 @@ local function execute(func, callback, ...)
     func = { func, 'function' },
     callback = { callback , 'function', true }
   }
-  local handle = Handle.new(func)
+
+  local co = coroutine.create(func)
+
+  -- Handle for an object currently running on the event loop.
+  -- The coroutine is paused while this is active.
+  -- Must provide methods cancel() and is_cancelled()
+  local cur_exec_handle
+
+  -- Handle for the user. Since cur_exec_handle will change every
+  -- step() we need to provide access to it through a proxy
+  local handle = {}
+
+  -- Analogous to uv.close
+  function handle:cancel(cb)
+    vim.validate{ callback = { cb , 'function', true } }
+    -- Cancel anything running on the event loop
+    if cur_exec_handle and not cur_exec_handle:is_cancelled() then
+      cur_exec_handle:cancel(cb)
+    end
+  end
+
+  -- Analogous to uv.is_closing
+  function handle:is_cancelled()
+    return cur_exec_handle and cur_exec_handle:is_cancelled()
+  end
+
+  local function set_executing_handle(h)
+    if is_async_handle(h) then
+      cur_exec_handle = h
+    end
+  end
+
+  setmetatable(handle, { __index = handle })
+  handles[co] = handle
 
   local function step(...)
-    if handle.cancelled_cb then
-      handle.cancelled_cb()
-      return
-    end
-
-    local ret = {coroutine.resume(handle.co, ...)}
+    local ret = {coroutine.resume(co, ...)}
     local stat, nargs, protected, err_or_fn = unpack(ret)
 
     if not stat then
       error(string.format("The coroutine failed with this message: %s\n%s",
-        err_or_fn, debug.traceback(handle.co)))
+        err_or_fn, debug.traceback(co)))
     end
 
-    if coroutine.status(handle.co) == 'dead' then
+    if coroutine.status(co) == 'dead' then
       if callback then
         callback(unpack(ret, 4))
       end
@@ -86,13 +96,15 @@ local function execute(func, callback, ...)
       args[nargs] = function(...)
         step(true, ...)
       end
-      local ok, err = pcall(err_or_fn, unpack(args, 1, nargs))
+      local ok, err_or_handle = pcall(err_or_fn, unpack(args, 1, nargs))
       if not ok then
-        step(false, err)
+        step(false, err_or_handle)
+      else
+        set_executing_handle(err_or_handle)
       end
     else
       args[nargs] = step
-      err_or_fn(unpack(args, 1, nargs))
+      set_executing_handle(err_or_fn(unpack(args, 1, nargs)))
     end
   end
 
