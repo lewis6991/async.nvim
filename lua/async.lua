@@ -1,9 +1,13 @@
 --- Small async library for Neovim plugins
 --- @module async
 
+-- Store all the async threads in a weak table so we don't prevent them from
+-- being garbage collected
+local threads = setmetatable({}, { __mode = 'kv' })
+
 local M = {}
 
--- Coroutine.running() was changed between Lua 5.1 and 5.2:
+-- Note: coroutine.running() was changed between Lua 5.1 and 5.2:
 -- - 5.1: Returns the running coroutine, or nil when called by the main thread.
 -- - 5.2: Returns the running coroutine plus a boolean, true when the running
 --   coroutine is the main one.
@@ -11,10 +15,20 @@ local M = {}
 -- For LuaJIT, 5.2 behaviour is enabled with LUAJIT_ENABLE_LUA52COMPAT
 --
 -- We need to handle both.
-local main_co_or_nil = coroutine.running()
+
+--- Returns whether the current execution context is async.
+---
+--- @return boolean|nil
+function M.running()
+  local current = coroutine.running()
+  if current and threads[current] then
+    return true
+  end
+end
 
 local function execute(func, callback, ...)
   local co = coroutine.create(func)
+  threads[co] = true
 
   local function step(...)
     local ret = {coroutine.resume(co, ...)}
@@ -61,7 +75,7 @@ end
 function M.create(func, argc)
   argc = argc or 0
   return function(...)
-    if coroutine.running() ~= main_co_or_nil then
+    if M.running() then
       return func(...)
     end
     local callback = select(argc+1, ...)
@@ -74,7 +88,7 @@ end
 --- @tparam function func
 function M.void(func)
   return function(...)
-    if coroutine.running() ~= main_co_or_nil then
+    if M.running() then
       return func(...)
     end
     execute(func, nil, ...)
@@ -89,7 +103,7 @@ end
 function M.wrap(func, argc, protected)
   assert(argc)
   return function(...)
-    if coroutine.running() == main_co_or_nil then
+    if not M.running() then
       return func(...)
     end
     return coroutine.yield(argc, protected, func, ...)
@@ -130,6 +144,9 @@ function M.join(n, interrupt_check, thunks)
     end
   end
 
+  if not M.running() then
+    return run
+  end
   return coroutine.yield(1, false, run)
 end
 

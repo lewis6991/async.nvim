@@ -5,6 +5,12 @@ Small async library for Neovim plugins
 
 ## Functions
 
+### `running()`
+
+Returns whether the current execution context is async.
+
+
+---
 ### `create(func, argc)`
 
 Use this to create a function which executes in an async context but
