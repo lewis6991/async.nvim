@@ -5,7 +5,7 @@ Small async library for Neovim plugins
 
 ## Functions
 
-### `sync(func, argc)`
+### `create(func, argc)`
 
 Use this to create a function which executes in an async context but
  called from a non-async context.  Inherently this cannot return anything

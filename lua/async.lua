@@ -58,7 +58,7 @@ end
 --- since it is non-blocking
 --- @tparam function func
 --- @tparam number argc The number of arguments of func. Defaults to 0
-function M.sync(func, argc)
+function M.create(func, argc)
   argc = argc or 0
   return function(...)
     if coroutine.running() ~= main_co_or_nil then
