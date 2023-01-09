@@ -30,14 +30,13 @@ Run a function in an async context.
   `async_t`: Handle
 
 ---
-### `wait(argc, protected, func, ...)`
+### `wait(argc, func, ...)`
 
 Wait on a callback style function
 
 #### Parameters:
 
 * `argc` (`integer?`):  The number of arguments of func. Must be included.
-* `protected` (`boolean?`):  call the function in protected mode (like pcall)
 * `func` (`function`):  callback style function to execute
 * `...` (`any`):  Arguments for func
 
@@ -73,9 +72,6 @@ Create a function which executes in an async context but
 ### `wrap(func, argc, protected, strict)`
 
 Creates an async function with a callback style function.
-
- TODO(lewis6991): Remove protected
-
 
 #### Parameters:
 
