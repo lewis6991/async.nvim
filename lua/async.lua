@@ -68,12 +68,6 @@ function M.run(func, callback, ...)
     return cur_exec_handle and cur_exec_handle:is_cancelled()
   end
 
-  local function set_executing_handle(h)
-    if is_async_handle(h) then
-      cur_exec_handle = h
-    end
-  end
-
   setmetatable(handle, { __index = handle })
   handles[co] = handle
 
@@ -97,7 +91,11 @@ function M.run(func, callback, ...)
 
     local args = {select(5, unpack(ret))}
     args[nargs] = step
-    set_executing_handle(err_or_fn(unpack(args, 1, nargs)))
+
+    local r = err_or_fn(unpack(args, 1, nargs))
+    if is_async_handle(r) then
+      cur_exec_handle = r
+    end
   end
 
   step(...)
