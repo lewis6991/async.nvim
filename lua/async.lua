@@ -32,7 +32,11 @@ local function is_async_handle(handle)
   end
 end
 
-local function execute(func, callback, ...)
+--- Run a function in an async context.
+--- @tparam function func
+--- @tparam function callback
+--- @tparam any ... Arguments for func
+function M.run(func, callback, ...)
   vim.validate{
     func = { func, 'function' },
     callback = { callback , 'function', true }
@@ -112,54 +116,111 @@ local function execute(func, callback, ...)
   return handle
 end
 
+local function wait(argc, func, protected, ...)
+  vim.validate{
+    argc = { argc, 'number'},
+    func = { func, 'function' },
+    protected = { protected, 'boolean' },
+  }
+  return coroutine.yield(argc, func, protected, ...)
+end
+
+--- Wait on a callback style function
+---
+--- @tparam integer? argc The number of arguments of func. Must be included.
+--- @tparam boolean? protected call the function in protected mode (like pcall)
+--- @tparam function func callback style function to execute
+--- @tparam any ... Arguments for func
+function M.wait(...)
+  local nargs, args = select('#', ...), {...}
+
+  local argstart
+  local protected = false
+  local argc
+  for i = 1, math.min(nargs, 3) do
+    if type(args[i]) == 'function' then
+      argstart = i + 1
+      break
+    end
+    if type(args[i]) == 'boolean' then
+      protected = args[i]
+    end
+    if type(args[i]) == 'number' then
+      argc = args[i]
+    end
+  end
+
+  assert(argstart)
+
+  local func = args[argstart - 1]
+  argc = argc or nargs - argstart + 1
+
+  return wait(argc, func, protected, unpack(args, argstart, nargs))
+end
+
 --- Use this to create a function which executes in an async context but
 --- called from a non-async context. Inherently this cannot return anything
 --- since it is non-blocking
 --- @tparam function func
 --- @tparam number argc The number of arguments of func. Defaults to 0
-function M.create(func, argc)
+--- @tparam boolean strict Error when called in non-async context
+function M.create(func, argc, strict)
   vim.validate{
-    func = { func , 'function' },
+    func = { func, 'function' },
     argc = { argc, 'number', true }
   }
   argc = argc or 0
   return function(...)
     if M.running() then
+      if strict then
+        error('This function must run in a non-async context')
+      end
       return func(...)
     end
     local callback = select(argc+1, ...)
-    return execute(func, callback, unpack({...}, 1, argc))
+    return M.run(func, callback, unpack({...}, 1, argc))
   end
 end
 
 --- Create a function which executes in an async context but
 --- called from a non-async context.
 --- @tparam function func
-function M.void(func)
+--- @tparam boolean strict Error when called in non-async context
+function M.void(func, strict)
   vim.validate{ func = { func , 'function' } }
   return function(...)
     if M.running() then
+      if strict then
+        error('This function must run in a non-async context')
+      end
       return func(...)
     end
-    return execute(func, nil, ...)
+    return M.run(func, nil, ...)
   end
 end
 
 --- Creates an async function with a callback style function.
+---
+--- TODO(lewis6991): Remove protected
+---
 --- @tparam function func A callback style function to be converted. The last argument must be the callback.
 --- @tparam integer argc The number of arguments of func. Must be included.
 --- @tparam boolean protected call the function in protected mode (like pcall)
+--- @tparam boolean strict Error when called in non-async context
 --- @return function Returns an async function
-function M.wrap(func, argc, protected)
+function M.wrap(func, argc, protected, strict)
   vim.validate{
     argc = { argc, 'number' },
     protected = { protected, 'boolean', true }
   }
   return function(...)
     if not M.running() then
+      if strict then
+        error('This function must run in an async context')
+      end
       return func(...)
     end
-    return coroutine.yield(argc, protected, func, ...)
+    return M.wait(argc, protected, func, ...)
   end
 end
 
@@ -200,7 +261,7 @@ function M.join(thunks, n, interrupt_check )
   if not M.running() then
     return run
   end
-  return coroutine.yield(1, false, run)
+  return M.wait(1, false, run)
 end
 
 --- Partially applying arguments to an async function
