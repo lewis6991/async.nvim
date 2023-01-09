@@ -27,7 +27,7 @@ function M.running()
 end
 
 local function is_async_handle(handle)
-  if handle and handle.cancel and handle.is_cancelled then
+  if handle and vim.is_callable(handle.cancel) and vim.is_callable(handle.is_cancelled) then
     return true
   end
 end
