@@ -140,26 +140,11 @@ end
 --- @tparam function func callback style function to execute
 --- @tparam any ... Arguments for func
 function M.wait(...)
-  local nargs, args = select('#', ...), {...}
-
-  local argstart
-  local argc
-  for i = 1, math.min(nargs, 3) do
-    if type(args[i]) == 'function' then
-      argstart = i + 1
-      break
-    end
-    if type(args[i]) == 'number' then
-      argc = args[i]
-    end
+  if type(select(1, ...)) == 'number' then
+    return wait(...)
   end
 
-  assert(argstart)
-
-  local func = args[argstart - 1]
-  argc = argc or nargs - argstart + 1
-
-  return wait(argc, func, unpack(args, argstart, nargs))
+  return wait(select('#', ...) - 1, ...)
 end
 
 --- Use this to create a function which executes in an async context but
