@@ -26,10 +26,34 @@ function M.running()
   end
 end
 
-local function is_async_handle(handle)
-  if handle and vim.is_callable(handle.cancel) and vim.is_callable(handle.is_cancelled) then
+local function is_Async_T(handle)
+  if handle
+    and type(handle) == 'table'
+    and vim.is_callable(handle.cancel)
+    and vim.is_callable(handle.is_cancelled) then
     return true
   end
+end
+
+local Async_T = {}
+
+-- Analogous to uv.close
+function Async_T:cancel(cb)
+  -- Cancel anything running on the event loop
+  if self._current and not self._current:is_cancelled() then
+    self._current:cancel(cb)
+  end
+end
+
+function Async_T.new(co)
+  local handle = setmetatable({}, { __index = Async_T })
+  handles[co] = handle
+  return handle
+end
+
+-- Analogous to uv.is_closing
+function Async_T:is_cancelled()
+  return self._current and self._current:is_cancelled()
 end
 
 --- Run a function in an async context.
@@ -44,32 +68,7 @@ function M.run(func, callback, ...)
   }
 
   local co = coroutine.create(func)
-
-  -- Handle for an object currently running on the event loop.
-  -- The coroutine is paused while this is active.
-  -- Must provide methods cancel() and is_cancelled()
-  local cur_exec_handle
-
-  -- Handle for the user. Since cur_exec_handle will change every
-  -- step() we need to provide access to it through a proxy
-  local handle = {}
-
-  -- Analogous to uv.close
-  function handle:cancel(cb)
-    vim.validate{ callback = { cb , 'function', true } }
-    -- Cancel anything running on the event loop
-    if cur_exec_handle and not cur_exec_handle:is_cancelled() then
-      cur_exec_handle:cancel(cb)
-    end
-  end
-
-  -- Analogous to uv.is_closing
-  function handle:is_cancelled()
-    return cur_exec_handle and cur_exec_handle:is_cancelled()
-  end
-
-  setmetatable(handle, { __index = handle })
-  handles[co] = handle
+  local handle = Async_T.new(co)
 
   local function step(...)
     local ret = {coroutine.resume(co, ...)}
@@ -89,12 +88,12 @@ function M.run(func, callback, ...)
 
     assert(type(err_or_fn) == 'function', "type error :: expected func")
 
-    local args = {select(5, unpack(ret))}
+    local args = {select(4, unpack(ret))}
     args[nargs] = step
 
     local r = err_or_fn(unpack(args, 1, nargs))
-    if is_async_handle(r) then
-      cur_exec_handle = r
+    if is_Async_T(r) then
+      handle._current = r
     end
   end
 
@@ -215,7 +214,7 @@ end
 --- @tparam function[] thunks
 --- @tparam integer n Max number of thunks to run concurrently
 --- @tparam function interrupt_check Function to abort thunks between calls
-function M.join(thunks, n, interrupt_check )
+function M.join(thunks, n, interrupt_check)
   local function run(finish)
     if #thunks == 0 then
       return finish()
