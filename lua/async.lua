@@ -109,7 +109,7 @@ local function wait(argc, func, ...)
   }
 
   -- Always run the wrapped functions in xpcall and re-raise the error in the
-  -- coroutine
+  -- coroutine. This makes pcall work as normal.
   local function pfunc(...)
     local args = { ... }
     local cb = args[argc]
@@ -134,7 +134,7 @@ end
 
 --- Wait on a callback style function
 ---
---- @tparam integer? argc The number of arguments of func. Must be included.
+--- @tparam integer? argc The number of arguments of func.
 --- @tparam function func callback style function to execute
 --- @tparam any ... Arguments for func
 function M.wait(...)
@@ -142,6 +142,7 @@ function M.wait(...)
     return wait(...)
   end
 
+  -- Asume argc is equal to the number of passed arguments.
   return wait(select('#', ...) - 1, ...)
 end
 

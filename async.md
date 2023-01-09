@@ -36,7 +36,7 @@ Wait on a callback style function
 
 #### Parameters:
 
-* `argc` (`integer?`):  The number of arguments of func. Must be included.
+* `argc` (`integer?`):  The number of arguments of func.
 * `func` (`function`):  callback style function to execute
 * `...` (`any`):  Arguments for func
 
