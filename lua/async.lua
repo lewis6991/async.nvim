@@ -82,7 +82,7 @@ function M.run(func, callback, ...)
 
     if coroutine.status(co) == 'dead' then
       if callback then
-        callback(unpack(ret, 4))
+        callback(unpack(ret, 4, table.maxn(ret)))
       end
       return
     end
@@ -129,7 +129,7 @@ local function wait(argc, func, ...)
     error(string.format("Wrapped function failed: %s\n%s", err, traceback))
   end
 
-  return unpack(ret, 2)
+  return unpack(ret, 2, table.maxn(ret))
 end
 
 --- Wait on a callback style function
