@@ -79,7 +79,7 @@ function M.run(func, callback, ...)
 
   local function step(...)
     local ret = {coroutine.resume(co, ...)}
-    local stat, nargs, protected, err_or_fn = unpack(ret)
+    local stat, nargs, err_or_fn = unpack(ret)
 
     if not stat then
       error(string.format("The coroutine failed with this message: %s\n%s",
@@ -96,55 +96,58 @@ function M.run(func, callback, ...)
     assert(type(err_or_fn) == 'function', "type error :: expected func")
 
     local args = {select(5, unpack(ret))}
-
-    if protected then
-      args[nargs] = function(...)
-        step(true, ...)
-      end
-      local ok, err_or_handle = pcall(err_or_fn, unpack(args, 1, nargs))
-      if not ok then
-        step(false, err_or_handle)
-      else
-        set_executing_handle(err_or_handle)
-      end
-    else
-      args[nargs] = step
-      set_executing_handle(err_or_fn(unpack(args, 1, nargs)))
-    end
+    args[nargs] = step
+    set_executing_handle(err_or_fn(unpack(args, 1, nargs)))
   end
 
   step(...)
   return handle
 end
 
-local function wait(argc, func, protected, ...)
+local function wait(argc, func, ...)
   vim.validate{
     argc = { argc, 'number'},
     func = { func, 'function' },
-    protected = { protected, 'boolean' },
   }
-  return coroutine.yield(argc, func, protected, ...)
+
+  -- Always run the wrapped functions in xpcall and re-raise the error in the
+  -- coroutine
+  local function pfunc(...)
+    local args = { ... }
+    local cb = args[argc]
+    args[argc] = function(...)
+      cb(true, ...)
+    end
+    xpcall(func, function(err)
+      cb(false, err, debug.traceback())
+    end, unpack(args, 1, argc))
+  end
+
+  local ret = {coroutine.yield(argc, pfunc, ...)}
+
+  local ok = ret[1]
+  if not ok then
+    local _, err, traceback = unpack(ret)
+    error(string.format("Wrapped function failed: %s\n%s", err, traceback))
+  end
+
+  return unpack(ret, 2)
 end
 
 --- Wait on a callback style function
 ---
 --- @tparam integer? argc The number of arguments of func. Must be included.
---- @tparam boolean? protected call the function in protected mode (like pcall)
 --- @tparam function func callback style function to execute
 --- @tparam any ... Arguments for func
 function M.wait(...)
   local nargs, args = select('#', ...), {...}
 
   local argstart
-  local protected = false
   local argc
   for i = 1, math.min(nargs, 3) do
     if type(args[i]) == 'function' then
       argstart = i + 1
       break
-    end
-    if type(args[i]) == 'boolean' then
-      protected = args[i]
     end
     if type(args[i]) == 'number' then
       argc = args[i]
@@ -156,7 +159,7 @@ function M.wait(...)
   local func = args[argstart - 1]
   argc = argc or nargs - argstart + 1
 
-  return wait(argc, func, protected, unpack(args, argstart, nargs))
+  return wait(argc, func, unpack(args, argstart, nargs))
 end
 
 --- Use this to create a function which executes in an async context but
@@ -203,17 +206,14 @@ end
 
 --- Creates an async function with a callback style function.
 ---
---- TODO(lewis6991): Remove protected
----
 --- @tparam function func A callback style function to be converted. The last argument must be the callback.
 --- @tparam integer argc The number of arguments of func. Must be included.
 --- @tparam boolean protected call the function in protected mode (like pcall)
 --- @tparam boolean strict Error when called in non-async context
 --- @treturn function Returns an async function
-function M.wrap(func, argc, protected, strict)
+function M.wrap(func, argc, strict)
   vim.validate{
     argc = { argc, 'number' },
-    protected = { protected, 'boolean', true }
   }
   return function(...)
     if not M.running() then
@@ -222,7 +222,7 @@ function M.wrap(func, argc, protected, strict)
       end
       return func(...)
     end
-    return M.wait(argc, protected, func, ...)
+    return M.wait(argc, func, ...)
   end
 end
 
