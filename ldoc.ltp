@@ -43,6 +43,25 @@ $(lev3) $(subnames):
 >         end
 >       end -- for
 >     end -- if params
+> if item.retgroups then
+
+$(lev3) Returns
+
+>   for _, group in ldoc.ipairs(item.retgroups) do
+>     for r in group:iter() do
+>       local type, ctypes = item:return_type(r)
+>       if type ~= '' then
+>         if r.text ~= '' then
+  `$(type)`: $(r.text)
+>         else
+  `$(type)`
+>         end
+>       else
+  $(r.text)
+>       end
+>     end
+>   end
+> end
 
 ---
 >   end

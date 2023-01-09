@@ -18,7 +18,7 @@ local M = {}
 
 --- Returns whether the current execution context is async.
 ---
---- @return boolean|nil
+--- @treturn boolean?
 function M.running()
   local current = coroutine.running()
   if current and handles[current] then
@@ -36,6 +36,7 @@ end
 --- @tparam function func
 --- @tparam function callback
 --- @tparam any ... Arguments for func
+--- @treturn async_t Handle
 function M.run(func, callback, ...)
   vim.validate{
     func = { func, 'function' },
@@ -164,6 +165,7 @@ end
 --- @tparam function func
 --- @tparam number argc The number of arguments of func. Defaults to 0
 --- @tparam boolean strict Error when called in non-async context
+--- @treturn function(...):async_t
 function M.create(func, argc, strict)
   vim.validate{
     func = { func, 'function' },
@@ -207,7 +209,7 @@ end
 --- @tparam integer argc The number of arguments of func. Must be included.
 --- @tparam boolean protected call the function in protected mode (like pcall)
 --- @tparam boolean strict Error when called in non-async context
---- @return function Returns an async function
+--- @treturn function Returns an async function
 function M.wrap(func, argc, protected, strict)
   vim.validate{
     argc = { argc, 'number' },

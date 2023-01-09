@@ -10,6 +10,10 @@ Small async library for Neovim plugins
 Returns whether the current execution context is async.
 
 
+#### Returns
+
+  `boolean?`
+
 ---
 ### `run(func, callback, ...)`
 
@@ -20,6 +24,10 @@ Run a function in an async context.
 * `func` (`function`):
 * `callback` (`function`):
 * `...` (`any`):  Arguments for func
+
+#### Returns
+
+  `async_t`: Handle
 
 ---
 ### `wait(argc, protected, func, ...)`
@@ -46,6 +54,10 @@ Use this to create a function which executes in an async context but
 * `argc` (`number`):  The number of arguments of func. Defaults to 0
 * `strict` (`boolean`):  Error when called in non-async context
 
+#### Returns
+
+  `function(...):async_t`
+
 ---
 ### `void(func, strict)`
 
@@ -71,6 +83,10 @@ Creates an async function with a callback style function.
 * `argc` (`integer`):  The number of arguments of func. Must be included.
 * `protected` (`boolean`):  call the function in protected mode (like pcall)
 * `strict` (`boolean`):  Error when called in non-async context
+
+#### Returns
+
+  `function`: Returns an async function
 
 ---
 ### `join(thunks, n, interrupt_check)`
