@@ -62,9 +62,9 @@ end
 --- @tparam any ... Arguments for func
 --- @treturn async_t Handle
 function M.run(func, callback, ...)
-  vim.validate{
+  vim.validate {
     func = { func, 'function' },
-    callback = { callback , 'function', true }
+    callback = { callback, 'function', true }
   }
 
   local co = coroutine.create(func)
@@ -105,8 +105,8 @@ function M.run(func, callback, ...)
 end
 
 local function wait(argc, func, ...)
-  vim.validate{
-    argc = { argc, 'number'},
+  vim.validate {
+    argc = { argc, 'number' },
     func = { func, 'function' },
   }
 
@@ -156,7 +156,7 @@ end
 --- @tparam boolean strict Error when called in non-async context
 --- @treturn function(...):async_t
 function M.create(func, argc, strict)
-  vim.validate{
+  vim.validate {
     func = { func, 'function' },
     argc = { argc, 'number', true }
   }
@@ -168,7 +168,7 @@ function M.create(func, argc, strict)
       end
       return func(...)
     end
-    local callback = select(argc+1, ...)
+    local callback = select(argc + 1, ...)
     return M.run(func, callback, unpack({...}, 1, argc))
   end
 end
@@ -178,7 +178,7 @@ end
 --- @tparam function func
 --- @tparam boolean strict Error when called in non-async context
 function M.void(func, strict)
-  vim.validate{ func = { func , 'function' } }
+  vim.validate { func = { func, 'function' } }
   return function(...)
     if M.running() then
       if strict then
@@ -197,7 +197,7 @@ end
 --- @tparam boolean strict Error when called in non-async context
 --- @treturn function Returns an async function
 function M.wrap(func, argc, strict)
-  vim.validate{
+  vim.validate {
     argc = { argc, 'number' },
   }
   return function(...)
@@ -228,7 +228,7 @@ function M.join(thunks, n, interrupt_check)
     local ret = {}
 
     local function cb(...)
-      ret[#ret+1] = {...}
+      ret[#ret + 1] = {...}
       to_go = to_go - 1
       if to_go == 0 then
         finish(ret)
@@ -260,7 +260,7 @@ function M.curry(fn, ...)
   return function(...)
     local other = {...}
     for i = 1, select('#', ...) do
-      args[nargs+i] = other[i]
+      args[nargs + i] = other[i]
     end
     fn(unpack(args))
   end
