@@ -194,7 +194,6 @@ end
 ---
 --- @tparam function func A callback style function to be converted. The last argument must be the callback.
 --- @tparam integer argc The number of arguments of func. Must be included.
---- @tparam boolean protected call the function in protected mode (like pcall)
 --- @tparam boolean strict Error when called in non-async context
 --- @treturn function Returns an async function
 function M.wrap(func, argc, strict)
