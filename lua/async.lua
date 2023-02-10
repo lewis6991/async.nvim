@@ -72,11 +72,12 @@ function M.run(func, callback, ...)
 
   local function step(...)
     local ret = {coroutine.resume(co, ...)}
-    local stat, nargs, err_or_fn = unpack(ret)
+    local ok = ret[1]
 
-    if not stat then
-      error(string.format("The coroutine failed with this message: %s\n%s",
-        err_or_fn, debug.traceback(co)))
+    if not ok then
+      local err = ret[2]
+      error(string.format("The coroutine failed with this message:\n%s\n%s",
+                          err, debug.traceback(co)))
     end
 
     if coroutine.status(co) == 'dead' then
@@ -86,12 +87,14 @@ function M.run(func, callback, ...)
       return
     end
 
-    assert(type(err_or_fn) == 'function', "type error :: expected func")
-
+    local nargs, fn = ret[2], ret[3]
     local args = {select(4, unpack(ret))}
+
+    assert(type(fn) == 'function', "type error :: expected func")
+
     args[nargs] = step
 
-    local r = err_or_fn(unpack(args, 1, nargs))
+    local r = fn(unpack(args, 1, nargs))
     if is_Async_T(r) then
       handle._current = r
     end
