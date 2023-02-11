@@ -140,12 +140,13 @@ end
 --- @tparam function func callback style function to execute
 --- @tparam any ... Arguments for func
 function M.wait(...)
-  if type(select(1, ...)) == 'number' then
+  if type(...) == 'number' then
     return wait(...)
+  else
+    -- Assume argc is equal to the number of passed arguments (- 1 for function
+    -- that is first argument, + 1 for callback that hasn't been passed).
+    return wait(select('#', ...), ...)
   end
-
-  -- Asume argc is equal to the number of passed arguments.
-  return wait(select('#', ...) - 1, ...)
 end
 
 --- Use this to create a function which executes in an async context but
