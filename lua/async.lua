@@ -57,7 +57,6 @@ function Async_T:is_cancelled()
 end
 
 --- Run a function in an async context.
---
 --- @tparam function func
 --- @tparam function callback
 --- @tparam any ... Arguments for func
@@ -145,7 +144,7 @@ function M.wait(...)
     return wait(...)
   end
 
-  -- Asume argc is equal to the number of passed arguments.
+  -- Assume argc is equal to the number of passed arguments.
   return wait(select('#', ...) - 1, ...)
 end
 
@@ -268,7 +267,7 @@ function M.curry(fn, ...)
 end
 
 --- An async function that when called will yield to the Neovim scheduler to be
---- able to call the API.
+--- able to call the neovim API.
 M.scheduler = M.wrap(vim.schedule, 1, false)
 
 return M
