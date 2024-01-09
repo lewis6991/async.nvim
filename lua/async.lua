@@ -57,6 +57,7 @@ function Async_T:is_cancelled()
 end
 
 --- Run a function in an async context.
+--
 --- @tparam function func
 --- @tparam function callback
 --- @tparam any ... Arguments for func

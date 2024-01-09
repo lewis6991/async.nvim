@@ -69,7 +69,7 @@ Create a function which executes in an async context but
 * `strict` (`boolean`):  Error when called in non-async context
 
 ---
-### `wrap(func, argc, protected, strict)`
+### `wrap(func, argc, strict)`
 
 Creates an async function with a callback style function.
 
@@ -77,7 +77,6 @@ Creates an async function with a callback style function.
 
 * `func` (`function`):  A callback style function to be converted. The last argument must be the callback.
 * `argc` (`integer`):  The number of arguments of func. Must be included.
-* `protected` (`boolean`):  call the function in protected mode (like pcall)
 * `strict` (`boolean`):  Error when called in non-async context
 
 #### Returns
