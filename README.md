@@ -8,7 +8,7 @@ Take the current function that uses a callback style function to run a system pr
 ```lua
 local function run_job(cmd, args, callback)
   local handle
-  handle = vim.loop.spawn(cmd, { args  = args, },
+  handle = vim.uv.spawn(cmd, { args  = args, },
     function(code)
       s.handle:close()
       callback(code)
@@ -53,9 +53,9 @@ First we turn this into an async function using `wrap`:
 
 ```lua
 
-local a = require'async'
+local a = require('async')
 
-local run_job_a = a.wrap(run_job, 3)
+local run_job_a = a.wrap(3, run_job)
 ```
 
 Now we need to create a top level function to initialize the async context. To do this we can use `void` or `sync`.
@@ -65,7 +65,7 @@ Note: the main difference between `void` and `sync` is that `sync` functions can
 For this example we will use `void`:
 
 ```lua
-local main = a.void(function()
+local main = a.sync(0, function()
   local code1 = run_job_a('echo', {'foo'})
   if code1 ~= 0 then
     return
