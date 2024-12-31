@@ -7,13 +7,7 @@ Take the current function that uses a callback style function to run a system pr
 
 ```lua
 local function run_job(cmd, args, callback)
-  local handle
-  handle = vim.uv.spawn(cmd, { args  = args, },
-    function(code)
-      s.handle:close()
-      callback(code)
-    end
-  )
+  return vim.uv.spawn(cmd, { args = args }, callback)
 end
 ```
 
@@ -53,9 +47,9 @@ First we turn this into an async function using `wrap`:
 
 ```lua
 
-local a = require('async')
+local async = require('async')
 
-local run_job_a = a.wrap(3, run_job)
+local run_job_a = async.awrap(3, run_job)
 ```
 
 Now we need to create a top level function to initialize the async context. To do this we can use `void` or `sync`.
@@ -65,7 +59,7 @@ Note: the main difference between `void` and `sync` is that `sync` functions can
 For this example we will use `void`:
 
 ```lua
-local main = a.sync(0, function()
+local code = async.arun(function()
   local code1 = run_job_a('echo', {'foo'})
   if code1 ~= 0 then
     return
@@ -76,11 +70,11 @@ local main = a.sync(0, function()
     return
   end
 
-  run_job_a('echo', {'baz'})
-end)
-
-main()
+  return run_job_a('echo', {'baz'})
+end):wait()
 ```
 
 We can now call `run_job_a` in linear imperative fashion without needing to define callbacks.
 The arguments provided to the callback in the original function are simply returned by the async version.
+
+Additionally because `run_job_a` returns an object with a `close()` method (as a `uv_process_t`), `asrync.arun` will automatically `close` the handle if either the task completes or is interuppted,

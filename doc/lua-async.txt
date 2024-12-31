@@ -1,0 +1,206 @@
+
+Lua async framework                                                 *lua-async*
+
+==============================================================================
+async
+
+
+- implemnted using Lua coroutines
+- async code requires a callback to be passed to the function
+- this can result in a lot of nested functions
+- vim.async provides a way to run functions asynchronously without the need for
+  callbacks
+
+- A flexible cancellation mechanism.
+- Extensibility — You can turn any callback-based function into a task
+  function. If the callback-based function is non-blocking, so will the task
+  function be.
+
+- Functions which execute in an |async-context| should be annotated with
+  `@async`.
+
+Examples: >lua
+  -- Create an async version of vim.system
+  local system = vim.async.awrap(3, function(cmd, opts, cb)
+    local obj = vim.system(cmd, opts, cb)
+    obj.close = function(_, callback)
+      if not obj:is_closing() then
+        obj:wait(0)
+        callback()
+      end
+    end
+    return obj
+  end)
+
+  local sleep = vim.async.awrap(2, function(duration, callback)
+    local timer = assert(vim.uv.new_timer())
+    timer:start(duration, 0, callback)
+    return timer -- timer has a close method
+  end
+
+  -- Create an async-context using arun
+  vim.async.arun(function())
+    local obj_ls = system({'ls'})
+    sleep(200)
+    local obj_cat = system({'cat file'})
+  end)
+<
+
+                                                                *async-context*
+
+An async-context is an executation context managed by `vim.async` and is
+implemented via |lua-coroutine|s. Many of the functions and methods in
+`vim.async` can only run when within this context.
+
+
+==============================================================================
+vim.async                                                            *vim.async*
+
+vim.async.arun({func})                                        *vim.async.arun()*
+    Run a function in an |async-context|.
+
+
+vim.async.async({func})                                      *vim.async.async()*
+    Wraps function {func} so when called it will be executed in an
+    |async-context|.
+
+    When called directly, the function will return a Task object.
+
+    Parameters: ~
+    - {func} (function): Function to wrap
+
+    Returns: ~
+    `fun(...): vim.async.Task`: The function that will be executed asynchronously.
+
+
+vim.async.await({task})                                 *vim.async.await()-task*
+    Wait for a task to complete.
+
+    If the task completes with an error, the error is thrown.
+
+    Note: must be called from an |async-context|.
+
+    Parameters: ~
+    - {task} (|vim.async.Task|): Task to wait for.
+
+
+vim.async.await({argc}, {func})                         *vim.async.await()-func*
+    Runs a callback function and waits for it to complete.
+
+    If the function errors, the error is thrown.
+
+    Note: must be called from an |async-context|.
+
+    Parameters: ~
+    - {argc} (`integer`):  Position of the callback argument in {func}.
+    - {func} (`function`): Function to run and wait for. Must contain a
+             callback argument at position {argc}.
+
+vim.async.status({task})                                    *vim.async.status()*
+    Returns the status of {task}s thread. See |coroutine.status()|.
+
+    Parameters: ~
+    - {task} (|vim.async.Task|?) Task, `nil` for current.
+
+    Returns: ~
+      (`'running'|'suspended'|'normal'|'dead'?`)
+
+
+vim.async.iter({tasks})                                       *vim.async.iter()*
+    Iterate over a list of tasks.
+
+    Note: must be called from an |async-context|.
+
+    Examples: >lua
+      local tasks = {}
+      for i = 1, 10 do
+        tasks[i] = arun(function()
+          schedule()
+          return 'FINISH', i
+        end)
+      end
+
+      local results = {}
+      arun(function()
+        for i, err, result in Async.iter(tasks) do
+          results[i] = { err, result }
+        end
+      end):wait(1000)
+
+<
+    Parameters: ~
+    - {tasks} (`vim.async.Task[]`): List of tasks to iterate over.
+
+    Returns: ~
+    - (`fun(): (integer? any?, any[]?)`) Iterator that waits for the next
+      task to complete. Returns the index of the task, the error and the
+      result of the task.
+
+
+vim.async.awrap({argc}, {func})                              *vim.async.awrap()*
+    Wraps a callback function so it can be called asynchronously.
+
+    {func} can optionally return an object with a close method to clean up
+    resources. Note this method will be called when the task finishes or
+    interrupted.
+
+    Examples: >lua
+      local sleep = vim.async.awrap(2, function(duration, callback)
+        local timer = assert(vim.uv.new_timer())
+        timer:start(duration, 0, callback)
+        return {
+          close = function(_, cb)
+            timer:close(cb)
+          end,
+        }
+      end
+<
+
+    Parameters: ~
+    - {argc} (`integer`):  Position of the callback argument in {func}.
+    - {func} (`function`): Function to wrap. Must contain a callback argument
+             at position {argc}.
+
+    Returns: ~
+    - (`fun(...): vim.async.Task`) The function that will be executed asynchronously.
+
+
+vim.async.schedule()                                       *vim.async.schedule()*
+    Pause the current |async-context| until the next iteration of the event
+    loop. See |vim.schedule()|.
+
+==============================================================================
+                                                                *vim.async.Task*
+
+A task is an object for managing asynchronous operations with ability to:
+- Asynchronously wait (via `Task:await`).
+- Synchronouslt wait (via `Task:wait`).
+- Cancellation (via `Task:close`).
+
+
+Task:await({callback})                                  *vim.async.Task.await()*
+    Asynchronously wait for the task to complete.
+
+    Parameters: ~
+    - {callback} (`fun(err, result)`): Callback to run when the task completes.
+
+Task:wait({timeout})                                     *vim.async.Task.wait()*
+    Synchronously wait for the task to complete. If the task does not complete
+    within the timeout, an error is thrown.
+
+    Parameters: ~
+    - {timeout} (`integer`): Timeout in milliseconds.
+
+    Returns: ~
+    - (`...`) The result of the task.
+
+Task:close({callback})                                  *vim.async.Task.close()*
+
+    See |uv.close()|.
+
+Task:is_closing({callback})                        *vim.async.Task.is_closing()*
+
+    See |uv.is_closing()|.
+
+
+vim:tw=78:ts=8:sw=4:sts=4:et:ft=help:norl:

@@ -1,99 +1,266 @@
 local helpers = require('nvim-test.helpers')
 local exec_lua = helpers.exec_lua
-local eq = helpers.eq
 
-local function wait(f)
-  for _ = 1, 100 do
-    helpers.sleep(10)
-    local r = f() --[[@as any]]
-    if r and r ~= vim.NIL then
-      return
-    end
-  end
-  error('Timeout')
-end
-
-local function exec(f)
-  return exec_lua([[
-    return loadstring(...)()
-  ]], string.dump(f))
-end
-
-local function exec_wait(f)
-  wait(function()
-    return exec(f)
+--- @param s string
+--- @param f fun()
+local function it_exec(s, f)
+  it(s, function()
+    exec_lua(f)
   end)
 end
-
 
 describe('async', function()
   before_each(function()
     helpers.clear()
     exec_lua('package.path = ...', package.path)
+
+    exec_lua(function()
+      _G.Async = require('async')
+      _G.await = Async.await
+      _G.arun = Async.arun
+      _G.async = Async.async
+      _G.awrap = Async.awrap
+      _G.schedule = Async.schedule
+    end)
   end)
 
-  it('works', function()
-    exec(function()
-      local async = require('async')
+  it_exec('can await a uv callback function', function()
+    local done = false
+    arun(function()
+      --- @type integer
+      local code1 = await(3, vim.uv.spawn, 'echo', { args = { 'foo' } })
+      assert(code1 == 0)
 
-      --- @type fun(cmd: string, opts: table): code: integer, signal: integer
-      local spawn = async.wrap(3, vim.uv.spawn)
+      --- @type integer
+      local code2 = await(3, vim.uv.spawn, 'echo', { args = { 'bar' } })
+      assert(code2 == 0)
 
-      async.run(function()
-        local code1 = spawn('echo', { args = {'foo'} })
-        if code1 ~= 0 then
-          return
-        end
+      done = true
+    end):wait(1000)
 
-        local code2 = spawn('echo', { args = {'bar'} })
-        if code2 ~= 0 then
-          return
-        end
+    assert(done)
+  end)
 
-        spawn('echo', { args = { 'baz' } })
-        _G.DONE = true
+  it_exec('callback function can be closed', function()
+    local timer = nil
+
+    local task = arun(function()
+      await(1, function(_callback)
+        -- Never call callback
+        timer = assert(vim.uv.new_timer())
+        return timer -- Note timer has a close method
       end)
     end)
 
-    exec_wait(function()
-      return _G.DONE
+    task:close()
+
+    local ok, err = pcall(function()
+      task:wait(1000)
     end)
 
+    assert(not ok and assert(err):match('Task is closed'), err)
+    assert(timer)
+    assert(timer and timer:is_closing())
   end)
 
-  it('can run join()', function()
-    exec(function()
-      local async = require('async')
+  -- Same as test above but uses async and awrap
+  it_exec('callback function can be closed (2)', function()
+    local timer = nil
 
-      local function gen_task(i)
-        return async.sync(0, function()
-          async.schedule()
-          return i
+    local wfn = awrap(1, function(_callback)
+      timer = assert(vim.uv.new_timer())
+      -- Never call callback
+      return {
+        close = function(_, cb)
+          timer:close(cb)
+        end,
+      }
+    end)
+
+    local fn = async(function()
+      wfn()
+    end)
+
+    local task = fn()
+
+    task:close()
+
+    local ok, err = pcall(function()
+      task:wait(1000)
+    end)
+
+    assert(not ok and assert(err):match('Task is closed'), err)
+    assert(timer and timer:is_closing() == true)
+  end)
+
+  it_exec('callback function can be closed (nested)', function()
+    local timer = nil
+
+    local task = arun(function()
+      await(arun(function()
+        await(1, function(_callback)
+          timer = assert(vim.uv.new_timer())
+          -- Never call callback
+          return {
+            close = function(_, cb)
+              timer:close(cb)
+            end,
+          }
         end)
-      end
+      end))
+    end)
 
-      local tasks = {}
-      for i = 1, 10 do
-        tasks[i] = gen_task(i)
-      end
+    task:close()
 
-      async.run(function()
-        _G.RESULT = async.join(2, tasks)
+    local ok, err = pcall(function()
+      task:wait(1000)
+    end)
+
+    assert(not ok and assert(err):match('Task is closed'), err)
+    assert(timer and timer:is_closing() == true)
+  end)
+
+  it_exec('can timeout tasks', function()
+    local timer = nil
+    local task = arun(function()
+      await(1, function(_callback)
+        timer = assert(vim.uv.new_timer())
+        -- Never call callback
+        return {
+          close = function(_, cb)
+            timer:close(cb)
+          end,
+        }
       end)
     end)
 
-    exec_wait(function()
-      return _G.RESULT
+    local ok, err = pcall(function()
+      task:wait(1)
     end)
 
-    local exp = {}
+    assert(not ok and assert(err):match('Timeout'), err)
+    assert(timer and timer:is_closing() == true)
+  end)
+
+  it_exec('handle tasks that error LLL', function()
+    local timer = nil
+    local task = arun(function()
+      await(1, function(callback)
+        timer = assert(vim.uv.new_timer())
+        timer:start(1, 0, callback)
+        return {
+          close = function(_, cb)
+            timer:close(cb)
+          end,
+        }
+      end)
+      schedule()
+      error('GOT HERE')
+    end)
+
+    local ok, err = pcall(function()
+      task:wait(10)
+    end)
+
+    assert(not ok, 'Expected error')
+    assert(assert(err):match('GOT HERE'), 'Unexpected error: ' .. err)
+    assert(timer and timer:is_closing() == true, 'Timer is not closing')
+  end)
+
+  it_exec('can wait on an empty task', function()
+    local did_cb = false
+    local a = 1
+
+    local task = arun(function()
+      a = a + 1
+    end)
+
+    task:await(function()
+      assert(a == 2)
+      did_cb = true
+    end)
+
+    task:wait(100)
+
+    assert(did_cb)
+  end)
+
+  it_exec('can iterate tasks', function()
+    local tasks = {} --- @type vim.async.Task[]
+
+    local expected = {} --- @type table[]
+
     for i = 1, 10 do
-      exp[i] = { i }
+      tasks[i] = arun(function()
+        if i % 2 == 0 then
+          schedule()
+        end
+        return 'FINISH', i
+      end)
+      expected[i] = { nil, { 'FINISH', i } }
     end
 
-    eq(exp, exec(function()
-      return _G.RESULT
-    end))
+    local results = {} --- @type table[]
+    arun(function()
+      for i, err, result in Async.iter(tasks) do
+        results[i] = { err, result }
+      end
+    end):wait(1000)
+
+    assert(
+      vim.deep_equal(expected, results),
+      ('%s does not equal %s'):format(vim.inspect(results), vim.inspect(expected))
+    )
   end)
 
+  it_exec('can await a arun task', function()
+    local a = arun(function()
+      return await(arun(function()
+        await(1, vim.schedule)
+        return 'JJ'
+      end))
+    end):wait(10)
+
+    assert(a == 'JJ')
+  end)
+
+  it_exec('handle errors in wrapped functions', function()
+    local task = arun(function()
+      await(1, function(_callback)
+        error('ERROR')
+      end)
+    end)
+    local ok, err = pcall(task.wait, task, 100)
+    assert(not ok and err:match('Task has error.*ERROR'))
+  end)
+
+  it_exec('iter tasks followed by error', function()
+    local task = arun(function()
+      schedule()
+      return 'FINISH', 1
+    end)
+
+    local expected = { { nil, { 'FINISH', 1 } } }
+
+    local results = {} --- @type table[]
+    local task2 = arun(function()
+      for i, err, result in Async.iter({ task }) do
+        results[i] = { err, result }
+      end
+      error('GOT HERE')
+    end)
+
+    local ok, err = pcall(task2.wait, task2, 1000)
+    assert(not ok and err:match('GOT HERE'))
+
+    assert(
+      vim.deep_equal(expected, results),
+      ('%s does not equal %s'):format(vim.inspect(results), vim.inspect(expected))
+    )
+  end)
+
+  -- TODO: test error message has correct stack trace when:
+  -- task finishes with no continuation
+  -- task finishes with synchronous wait
+  -- nil in results
 end)
