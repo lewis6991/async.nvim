@@ -1,7 +1,3 @@
---- @brief `vim.async` is a module that provides a way to run and manage
---- asynchronous functions.
----
-
 --- @type fun(...: any): { [integer]: any, n: integer }
 local pack_len = vim.F.pack_len
 
@@ -81,8 +77,6 @@ end
 --- @param timeout integer
 --- @return any ...
 function Task:wait(timeout)
-  self:log('WAIT')
-
   local done = vim.wait(timeout, function()
     return self:_completed()
   end)
@@ -104,7 +98,6 @@ end
 --- @param err? any
 --- @param result? any[]
 function Task:_finish(err, result)
-  self:log('FINISH', err)
   self._err = err
   self._result = result
   threads[self._thread] = nil
@@ -133,7 +126,6 @@ function Task:close(callback)
     return
   end
 
-  self:log('closing')
   self._closing = true
 
   local function close0()
@@ -145,7 +137,6 @@ function Task:close(callback)
   end
 
   if self._current_obj then
-    self:log('closing obj', self._current_obj)
     self._current_obj:close(close0)
   else
     close0()
@@ -165,7 +156,6 @@ end
 function Task:_resume(...)
   -- TODO(lewis6991): can this happen?
   -- if coroutine.status(self._thread) == 'dead' then
-  --   self:log('resume dead')
   --   -- Callback function had error
   --   self:_finish(...)
   --   return
@@ -177,17 +167,13 @@ function Task:_resume(...)
   --- @cast ret [string|vim.async.CallbackFn]
 
   if not stat then
-    self:log('resume error')
     -- Coroutine had error
     self:_finish(ret[1])
   elseif coroutine.status(self._thread) == 'dead' then
-    self:log('resume finish')
     -- Coroutine finished
     self:_finish(nil, ret)
   else
     --- @cast ret [vim.async.CallbackFn]
-
-    self:log('resume step')
 
     local fn = ret[1]
 
@@ -214,7 +200,7 @@ end
 
 --- @package
 function Task:log(...)
-  -- print(self._thread, ...)
+  print(self._thread, ...)
 end
 
 ---@param func function
