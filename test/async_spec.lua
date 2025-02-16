@@ -26,7 +26,7 @@ describe('async', function()
 
   it_exec('can await a uv callback function', function()
     local done = false
-    arun(function()
+    assert(arun(function()
       --- @type integer
       local code1 = await(3, vim.uv.spawn, 'echo', { args = { 'foo' } })
       assert(code1 == 0)
@@ -36,7 +36,7 @@ describe('async', function()
       assert(code2 == 0)
 
       done = true
-    end):wait(1000)
+    end):wait(1000))
 
     assert(done)
   end)
@@ -54,11 +54,9 @@ describe('async', function()
 
     task:close()
 
-    local ok, err = pcall(function()
-      task:wait(1000)
-    end)
+    local ok, err = task:wait(1000)
 
-    assert(not ok and assert(err):match('Task is closed'), err)
+    assert(not ok and err == 'closed', err)
     assert(timer)
     assert(timer and timer:is_closing())
   end)
@@ -85,11 +83,9 @@ describe('async', function()
 
     task:close()
 
-    local ok, err = pcall(function()
-      task:wait(1000)
-    end)
+    local ok, err = task:wait(1000)
 
-    assert(not ok and assert(err):match('Task is closed'), err)
+    assert(not ok and err == 'closed', err)
     assert(timer and timer:is_closing() == true)
   end)
 
@@ -112,11 +108,8 @@ describe('async', function()
 
     task:close()
 
-    local ok, err = pcall(function()
-      task:wait(1000)
-    end)
-
-    assert(not ok and assert(err):match('Task is closed'), err)
+    local ok, err = task:wait(1000)
+    assert(not ok and err == 'closed', err)
     assert(timer and timer:is_closing() == true)
   end)
 
@@ -134,11 +127,15 @@ describe('async', function()
       end)
     end)
 
-    local ok, err = pcall(function()
-      task:wait(1)
-    end)
+    local ok, err = task:wait(1)
 
-    assert(not ok and assert(err):match('Timeout'), err)
+    assert(not ok and err == 'timeout', err)
+    task:close()
+
+    -- Can use wait() again to wait for the task to close
+    ok, err = task:wait()
+
+    assert(not ok and err == 'closed', err)
     assert(timer and timer:is_closing() == true)
   end)
 
@@ -158,9 +155,7 @@ describe('async', function()
       error('GOT HERE')
     end)
 
-    local ok, err = pcall(function()
-      task:wait(10)
-    end)
+    local ok, err = task:wait(10)
 
     assert(not ok, 'Expected error')
     assert(assert(err):match('GOT HERE'), 'Unexpected error: ' .. err)
@@ -180,7 +175,7 @@ describe('async', function()
       did_cb = true
     end)
 
-    task:wait(100)
+    assert(task:wait(100))
 
     assert(did_cb)
   end)
@@ -201,11 +196,11 @@ describe('async', function()
     end
 
     local results = {} --- @type table[]
-    arun(function()
+    assert(arun(function()
       for i, err, result in Async.iter(tasks) do
         results[i] = { err, result }
       end
-    end):wait(1000)
+    end):wait(1000))
 
     assert(
       vim.deep_equal(expected, results),
@@ -214,12 +209,12 @@ describe('async', function()
   end)
 
   it_exec('can await a arun task', function()
-    local a = arun(function()
+    local _, a = assert(arun(function()
       return await(arun(function()
         await(1, vim.schedule)
         return 'JJ'
       end))
-    end):wait(10)
+    end):wait(10))
 
     assert(a == 'JJ')
   end)
@@ -230,8 +225,8 @@ describe('async', function()
         error('ERROR')
       end)
     end)
-    local ok, err = pcall(task.wait, task, 100)
-    assert(not ok and err:match('Task has error.*ERROR'))
+    local ok, err = task:wait(100)
+    assert(not ok and err:match('ERROR'))
   end)
 
   it_exec('iter tasks followed by error', function()
@@ -250,7 +245,7 @@ describe('async', function()
       error('GOT HERE')
     end)
 
-    local ok, err = pcall(task2.wait, task2, 1000)
+    local ok, err = task2:wait(1000)
     assert(not ok and err:match('GOT HERE'))
 
     assert(

@@ -13,8 +13,7 @@ local threads = setmetatable({}, { __mode = 'k' })
 
 --- @return vim.async.Task?
 local function running()
-  local co = coroutine.running()
-  local task = threads[co]
+  local task = threads[coroutine.running()]
   if task and not (task._closed or task._closing) then
     return task
   end
@@ -23,17 +22,29 @@ end
 --- Base class for async tasks. Async functions should return a subclass of
 --- this. This is designed specifically to be a base class of uv_handle_t
 --- @class vim.async.Handle
---- @field close fun(self: any, callback: fun())
+--- @field close fun(self: vim.async.Handle, callback: fun())
+--- @field is_closing? fun(self: vim.async.Handle): boolean
 
 --- @alias vim.async.CallbackFn fun(...: any): vim.async.Handle?
 
 --- @class vim.async.Task : vim.async.Handle
 --- @field private _callbacks table<integer,fun(err?: any, result?: any[])>
---- @field package _thread thread
---- @field package _current_obj? {close: fun(self, callback: fun())}
+--- @field private _thread thread
+---
+--- Tasks can call other async functions (task of callback functions)
+--- when we are waiting on a child, we store the handle to it here so we can
+--- cancel it.
+--- @field private _current_child? {close: fun(self, callback: fun())}
+---
 --- @field package _closed boolean
---- @field package _err? any
---- @field package _result? any[]
+---
+--- Error result of the task is an error occurs.
+--- Must use `await` to get the result.
+--- @field private _err? any
+---
+--- Result of the task.
+--- Must use `await` to get the result.
+--- @field private _result? any[]
 local Task = {}
 
 --- @private
@@ -73,25 +84,36 @@ function Task:_completed()
   return self._closed or (self._err or self._result) ~= nil
 end
 
---- Synchronous wait
---- @param timeout integer
+--- Synchronously wait for a task to finish (blocking)
+---
+--- Example:
+---
+---   local ok, err_or_result = task:wait(10)
+---
+---   local _, result = assert(task:wait(10))
+---
+--- Can be called if a task is closing.
+--- @param timeout? integer
+--- @return boolean status
 --- @return any ...
 function Task:wait(timeout)
-  local done = vim.wait(timeout, function()
+  local done = vim.wait(timeout or math.huge, function()
+    -- Note we use self:_completed() instead of self:await() to avoid creating a
+    -- callback. This avoids having to cleanup/unregister any callback in the
+    -- case of a timeout.
     return self:_completed()
   end)
 
   if not done then
-    self:close()
-    error('Timeout waiting for async task')
+    return false, 'timeout'
   elseif self._closed then
-    error('Task is closed')
+    return false, 'closed'
   elseif self._err then
-    error('Task has error: ' .. self._err)
+    return false, self._err
+  else
+    -- TODO(lewis6991): test me
+    return true, unpack_len(assert(self._result))
   end
-
-  -- TODO(lewis6991): test me
-  return unpack_len(assert(self._result))
 end
 
 --- @package
@@ -136,8 +158,8 @@ function Task:close(callback)
     end
   end
 
-  if self._current_obj then
-    self._current_obj:close(close0)
+  if self._current_child then
+    self._current_child:close(close0)
   else
     close0()
   end
@@ -193,39 +215,50 @@ function Task:_resume(...)
     elseif obj_or_err and not obj_or_err.close then
       self:_finish('Invalid object returned: ' .. vim.inspect(obj_or_err))
     else
-      self._current_obj = obj_or_err
+      self._current_child = obj_or_err
     end
   end
 end
 
 --- @package
-function Task:log(...)
+function Task:_log(...)
   print(self._thread, ...)
 end
 
----@param func function
----@return vim.async.Task
-function M.arun(func)
+--- @return 'running'|'suspended'|'normal'|'dead'?
+function Task:status()
+  return coroutine.status(self._thread)
+end
+
+--- @param func function
+--- @param ... any
+--- @return vim.async.Task
+function M.arun(func, ...)
   local task = Task._new(func)
-  task:_resume()
+  task:_resume(...)
   return task
 end
 
 --- Create an async function
 function M.async(func)
   return function(...)
-    return M.arun(wrap_cb(func, ...))
+    return M.arun(func, ...)
   end
+end
+
+local function is_task(obj)
+  return type(obj) == 'table' and getmetatable(obj) == Task
 end
 
 --- Returns the status of a task’s thread.
 ---
---- @param task vim.async.Task
+--- @param task? vim.async.Task
 --- @return 'running'|'suspended'|'normal'|'dead'?
 function M.status(task)
   task = task or running()
   if task then
-    return coroutine.status(task._thread)
+    assert(is_task(task), 'Expected Task')
+    return task:status()
   end
 end
 
@@ -288,9 +321,7 @@ end
 --- @overload fun(task: vim.async.Task): any ...
 --- @overload fun(argc: integer, func: vim.async.CallbackFn, ...:any): any ...
 function M.await(...)
-  if not running() then
-    error('Cannot await in non-async context')
-  end
+  assert(running(), 'Cannot await in non-async context')
 
   local arg1 = select(1, ...)
 
