@@ -237,13 +237,6 @@ local function is_async_handle(obj)
 end
 
 function Task:_resume(...)
-  -- TODO(lewis6991): can this happen?
-  -- if coroutine.status(self._thread) == 'dead' then
-  --   -- Callback function had error
-  --   self:_finish(...)
-  --   return
-  -- end
-
   --- @type [boolean, string|vim.async.CallbackFn]
   local ret = { coroutine.resume(self._thread, ...) }
   local stat = table.remove(ret, 1) --- @type boolean
@@ -319,10 +312,6 @@ function M.status(task)
   end
 end
 
--- TODO(lewis6991): do we need pyeild
--- There’s also `pyield` variant of `yield` that returns `success, results`
--- instead of throwing an error.
-
 --- @generic R1, R2, R3, R4
 --- @param fun fun(callback: fun(r1: R1, r2: R2, r3: R3, r4: R4)): any?
 --- @return R1, R2, R3, R4
@@ -342,6 +331,7 @@ local function await_task(task)
   end)
 
   if err then
+    -- TODO(lewis6991): what is the correct level to pass?
     error(err, 0)
   end
   assert(result)
