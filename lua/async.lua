@@ -46,6 +46,7 @@ end
 --- Must use `await` to get the result.
 --- @field private _result? any[]
 local Task = {}
+Task.__index = Task
 
 --- @private
 --- @param func function
@@ -58,7 +59,7 @@ function Task._new(func)
     _closed = false,
     _thread = thread,
     _callbacks = {},
-  }, { __index = Task })
+  }, Task)
 
   threads[thread] = self
 
@@ -84,19 +85,22 @@ function Task:_completed()
   return self._closed or (self._err or self._result) ~= nil
 end
 
---- Synchronously wait for a task to finish (blocking)
+--- Synchronously wait (protected) for a task to finish (blocking)
+---
+--- If an error is returned, `Task:traceback()` can be used to get the
+--- stack trace of the error.
 ---
 --- Example:
 ---
----   local ok, err_or_result = task:wait(10)
+---   local ok, err_or_result = task:pwait(10)
 ---
----   local _, result = assert(task:wait(10))
+---   local _, result = assert(task:pwait(10), task:traceback())
 ---
 --- Can be called if a task is closing.
 --- @param timeout? integer
 --- @return boolean status
---- @return any ...
-function Task:wait(timeout)
+--- @return any ... result or error
+function Task:pwait(timeout)
   local done = vim.wait(timeout or math.huge, function()
     -- Note we use self:_completed() instead of self:await() to avoid creating a
     -- callback. This avoids having to cleanup/unregister any callback in the
@@ -114,6 +118,28 @@ function Task:wait(timeout)
     -- TODO(lewis6991): test me
     return true, unpack_len(assert(self._result))
   end
+end
+
+--- Synchronously wait for a task to finish (blocking)
+--- @param timeout? integer
+--- @return any ... result
+function Task:wait(timeout)
+  local res = pack_len(self:pwait(timeout))
+
+  local stat = table.remove(res, 1)
+  res.n = res.n - 1
+
+  if not stat then
+    error(self:traceback(res[2]))
+  end
+
+  return unpack_len(res)
+end
+
+--- @param msg? string
+--- @return string
+function Task:traceback(msg)
+  return debug.traceback(self._thread, msg)
 end
 
 --- @package
@@ -230,6 +256,10 @@ function Task:status()
   return coroutine.status(self._thread)
 end
 
+local function is_task(obj)
+  return type(obj) == 'table' and getmetatable(obj) == Task
+end
+
 --- @param func function
 --- @param ... any
 --- @return vim.async.Task
@@ -246,9 +276,6 @@ function M.async(func)
   end
 end
 
-local function is_task(obj)
-  return type(obj) == 'table' and getmetatable(obj) == Task
-end
 
 --- Returns the status of a task’s thread.
 ---
@@ -325,13 +352,13 @@ function M.await(...)
 
   local arg1 = select(1, ...)
 
-  if type(arg1) == 'table' then
-    return await_task(...)
-  elseif type(arg1) == 'number' then
+  if type(arg1) == 'number' then
     return await_cbfun(...)
+  elseif is_task(arg1) then
+    return await_task(...)
+  else
+    error('Invalid arguments, expected Task or (argc, func) got: '.. type(arg1), 2)
   end
-
-  error('Invalid arguments, expected Task or (argc, func)')
 end
 
 --- Creates an async function with a callback style function.
