@@ -331,17 +331,9 @@ local function yield(fun)
   return coroutine.yield(fun)
 end
 
-local function validate_task(task)
-  if not task or not task._thread then
-    error('Invalid task')
-  end
-end
-
 --- @param task vim.async.Task
 --- @return any ...
 local function await_task(task)
-  validate_task(task)
-
   --- @param callback fun(err?: string, result?: any[])
   --- @return function
   local err, result = yield(function(callback)
