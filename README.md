@@ -78,3 +78,4 @@ We can now call `run_job_a` in linear imperative fashion without needing to defi
 The arguments provided to the callback in the original function are simply returned by the async version.
 
 Additionally because `run_job_a` returns an object with a `close()` method (as a `uv_process_t`), `asrync.arun` will automatically `close` the handle if either the task completes or is interuppted,
+

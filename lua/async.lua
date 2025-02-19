@@ -14,7 +14,7 @@ local threads = setmetatable({}, { __mode = 'k' })
 --- @return vim.async.Task?
 local function running()
   local task = threads[coroutine.running()]
-  if task and not (task._closed or task._closing) then
+  if task and not (task:_completed() or task._closing) then
     return task
   end
 end
@@ -36,8 +36,6 @@ end
 --- cancel it.
 --- @field private _current_child? {close: fun(self, callback: fun())}
 ---
---- @field package _closed boolean
----
 --- Error result of the task is an error occurs.
 --- Must use `await` to get the result.
 --- @field private _err? any
@@ -56,7 +54,6 @@ function Task._new(func)
 
   local self = setmetatable({
     _closing = false,
-    _closed = false,
     _thread = thread,
     _callbacks = {},
   }, Task)
@@ -70,19 +67,17 @@ end
 function Task:await(callback)
   if self._closing then
     callback('closing')
-  elseif self._closed then
-    callback('closed')
-  elseif not threads[self._thread] then
-    -- Already finished
+  elseif self:_completed() then -- TODO(lewis6991): test
+    -- Already finished or closed
     callback(self._err, self._result)
   else
     table.insert(self._callbacks, callback)
   end
 end
 
---- @private
+--- @package
 function Task:_completed()
-  return self._closed or (self._err or self._result) ~= nil
+  return (self._err or self._result) ~= nil
 end
 
 --- Synchronously wait (protected) for a task to finish (blocking)
@@ -110,8 +105,6 @@ function Task:pwait(timeout)
 
   if not done then
     return false, 'timeout'
-  elseif self._closed then
-    return false, 'closed'
   elseif self._err then
     return false, self._err
   else
@@ -130,22 +123,58 @@ function Task:wait(timeout)
   res.n = res.n - 1
 
   if not stat then
-    error(self:traceback(res[2]))
+    error(res[1])
   end
 
   return unpack_len(res)
 end
 
+--- @param obj any
+--- @return boolean
+local function is_task(obj)
+  return type(obj) == 'table' and getmetatable(obj) == Task
+end
+
+--- @private
+--- @param msg? string
+--- @param _lvl? integer
+--- @return string
+function Task:_traceback(msg, _lvl)
+  _lvl = _lvl or 0
+
+  local thread = ('[%s] '):format(self._thread)
+
+  local child = self._current_child
+  if is_task(child) then
+    --- @cast child vim.async.Task
+    msg = child:_traceback(msg , _lvl + 1)
+  end
+
+  local tblvl = is_task(child) and 2 or nil
+  msg = msg .. debug.traceback(self._thread, '', tblvl):gsub('\n\t', '\n\t'..thread)
+
+  if _lvl == 0 then
+    --- @type string
+    msg = msg
+      :gsub('\nstack traceback:\n', '\nSTACK TRACEBACK:\n', 1)
+      :gsub("\nstack traceback:\n", '\n')
+      :gsub('\nSTACK TRACEBACK:\n', '\nstack traceback:\n', 1)
+  end
+
+  return msg
+end
+
 --- @param msg? string
 --- @return string
 function Task:traceback(msg)
-  return debug.traceback(self._thread, msg)
+  return self:_traceback(msg)
 end
 
 --- @package
 --- @param err? any
 --- @param result? any[]
 function Task:_finish(err, result)
+  self._current_child = nil
   self._err = err
   self._result = result
   threads[self._thread] = nil
@@ -162,32 +191,31 @@ end
 
 --- @param callback? fun()
 function Task:close(callback)
-  if
-    self._closing
-    or self._closed
-    or not threads[self._thread]
-    or coroutine.status(self._thread) == 'dead'
-  then
+  if self:_completed() then
     if callback then
       callback()
     end
     return
   end
 
-  self._closing = true
-
-  local function close0()
-    self._closed = true
-    self:_finish('closed')
-    if callback then
+  if callback then
+    self:await(function()
       callback()
-    end
+    end)
   end
 
+  if self._closing then
+    return
+  end
+
+  self._closing = true
+
   if self._current_child then
-    self._current_child:close(close0)
+    self._current_child:close(function()
+      self:_finish('closed')
+    end)
   else
-    close0()
+    self:_finish('closed')
   end
 end
 
@@ -199,6 +227,13 @@ local function wrap_cb(callback, ...)
   return function()
     return callback(unpack_len(args))
   end
+end
+
+--- @param obj any
+--- @return boolean
+local function is_async_handle(obj)
+  local ty = type(obj)
+  return (ty == 'table' or ty == 'userdata') and vim.is_callable(obj.close)
 end
 
 function Task:_resume(...)
@@ -226,22 +261,22 @@ function Task:_resume(...)
     local fn = ret[1]
 
     -- TODO(lewis6991): refine error handler to be more specific
-    local ok, obj_or_err
-    ok, obj_or_err = xpcall(fn, debug.traceback, function(...)
-      local obj = obj_or_err --[[@as vim.async.Task]]
-      if obj then
-        obj:close(wrap_cb(self._resume, self, ...))
+    local ok, r
+    ok, r = pcall(fn, function(...)
+      if is_async_handle(r) then
+        --- @cast r vim.async.Handle
+        -- We must close children before we resume to ensure
+        -- all resources are collected.
+        r:close(wrap_cb(self._resume, self, ...))
       else
         self:_resume(...)
       end
     end)
 
     if not ok then
-      self:_finish(obj_or_err)
-    elseif obj_or_err and not obj_or_err.close then
-      self:_finish('Invalid object returned: ' .. vim.inspect(obj_or_err))
-    else
-      self._current_child = obj_or_err
+      self:_finish(r)
+    elseif is_async_handle(r) then
+      self._current_child = r
     end
   end
 end
@@ -254,10 +289,6 @@ end
 --- @return 'running'|'suspended'|'normal'|'dead'?
 function Task:status()
   return coroutine.status(self._thread)
-end
-
-local function is_task(obj)
-  return type(obj) == 'table' and getmetatable(obj) == Task
 end
 
 --- @param func function
@@ -275,7 +306,6 @@ function M.async(func)
     return M.arun(func, ...)
   end
 end
-
 
 --- Returns the status of a task’s thread.
 ---
@@ -320,7 +350,7 @@ local function await_task(task)
   end)
 
   if err then
-    error(('Task function failed: %s\n%s'):format(err))
+    error(err, 0)
   end
   assert(result)
 
@@ -357,7 +387,7 @@ function M.await(...)
   elseif is_task(arg1) then
     return await_task(...)
   else
-    error('Invalid arguments, expected Task or (argc, func) got: '.. type(arg1), 2)
+    error('Invalid arguments, expected Task or (argc, func) got: ' .. type(arg1), 2)
   end
 end
 

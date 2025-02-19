@@ -25,30 +25,43 @@ describe('async', function()
   end)
 
   it_exec('can await a uv callback function', function()
+    local weak = setmetatable({}, { __mode = 'v' })
+
     local done = false
+
+    local function spawn(...)
+      local obj = vim.uv.spawn(...)
+      table.insert(weak, obj)
+      return obj
+    end
+
     arun(function()
       --- @type integer
-      local code1 = await(3, vim.uv.spawn, 'echo', { args = { 'foo' } })
+      local code1 = await(3, spawn, 'echo', { args = { 'foo' } })
       assert(code1 == 0)
 
       --- @type integer
-      local code2 = await(3, vim.uv.spawn, 'echo', { args = { 'bar' } })
+      local code2 = await(3, spawn, 'echo', { args = { 'bar' } })
       assert(code2 == 0)
 
       done = true
     end):wait(1000)
 
     assert(done)
+
+    collectgarbage('collect')
+    assert(not next(weak), 'Resources not collected')
   end)
 
   it_exec('callback function can be closed', function()
-    local timer = nil
+    local weak = setmetatable({}, { __mode = 'v' })
 
     local task = arun(function()
       await(1, function(_callback)
         -- Never call callback
-        timer = assert(vim.uv.new_timer())
-        return timer -- Note timer has a close method
+        local timer = vim.uv.new_timer()
+        weak.timer = timer
+        return timer
       end)
     end)
 
@@ -57,22 +70,22 @@ describe('async', function()
     local ok, err = task:pwait(1000)
 
     assert(not ok and err == 'closed', task:traceback(err))
-    assert(timer)
-    assert(timer and timer:is_closing())
+    assert(weak.timer)
+    assert(weak.timer:is_closing())
+
+    collectgarbage('collect')
+    assert(not next(weak), 'Resources not collected')
   end)
 
   -- Same as test above but uses async and awrap
   it_exec('callback function can be closed (2)', function()
-    local timer = nil
+    local weak = setmetatable({}, { __mode = 'v' })
 
     local wfn = awrap(1, function(_callback)
-      timer = assert(vim.uv.new_timer())
       -- Never call callback
-      return {
-        close = function(_, cb)
-          timer:close(cb)
-        end,
-      }
+      local timer = vim.uv.new_timer()
+      weak.timer = timer
+      return timer
     end)
 
     local fn = async(function()
@@ -86,22 +99,22 @@ describe('async', function()
     local ok, err = task:pwait(1000)
 
     assert(not ok and err == 'closed', task:traceback(err))
-    assert(timer and timer:is_closing() == true)
+    assert(weak.timer and weak.timer:is_closing() == true)
+
+    collectgarbage('collect')
+    assert(not next(weak), 'Resources not collected')
   end)
 
   it_exec('callback function can be closed (nested)', function()
-    local timer = nil
+    local weak = setmetatable({}, { __mode = 'v' })
 
     local task = arun(function()
       await(arun(function()
         await(1, function(_callback)
-          timer = assert(vim.uv.new_timer())
           -- Never call callback
-          return {
-            close = function(_, cb)
-              timer:close(cb)
-            end,
-          }
+          local timer = assert(vim.uv.new_timer())
+          weak.timer = timer
+          return timer
         end)
       end))
     end)
@@ -110,46 +123,48 @@ describe('async', function()
 
     local ok, err = task:pwait(1000)
     assert(not ok and err == 'closed', task:traceback(err))
-    assert(timer and timer:is_closing() == true)
+    assert(weak.timer and weak.timer:is_closing() == true)
+
+    collectgarbage('collect')
+    assert(not next(weak), 'Resources not collected')
   end)
 
   it_exec('can timeout tasks', function()
-    local timer = nil
+    local weak = setmetatable({}, { __mode = 'v' })
+
     local task = arun(function()
       await(1, function(_callback)
-        timer = assert(vim.uv.new_timer())
         -- Never call callback
-        return {
-          close = function(_, cb)
-            timer:close(cb)
-          end,
-        }
+        local timer = assert(vim.uv.new_timer())
+        weak.timer = timer
+        return timer
       end)
     end)
 
-    local ok, err = task:pwait(1)
-
-    assert(not ok and err == 'timeout', task:traceback(err))
-    task:close()
+    do
+      local ok, err = task:pwait(1)
+      assert(not ok and err == 'timeout', task:traceback(err))
+      task:close()
+    end
 
     -- Can use wait() again to wait for the task to close
-    ok, err = task:pwait()
-
+    local ok, err = task:pwait(1000)
     assert(not ok and err == 'closed', err)
-    assert(timer and timer:is_closing() == true)
+    assert(weak.timer and weak.timer:is_closing() == true)
+
+    collectgarbage('collect')
+    assert(not next(weak), 'Resources not collected')
   end)
 
-  it_exec('handle tasks that error LLL', function()
-    local timer = nil
+  it_exec('handle tasks that error', function()
+    local weak = setmetatable({}, { __mode = 'v' })
+
     local task = arun(function()
       await(1, function(callback)
-        timer = assert(vim.uv.new_timer())
+        local timer = assert(vim.uv.new_timer())
         timer:start(1, 0, callback)
-        return {
-          close = function(_, cb)
-            timer:close(cb)
-          end,
-        }
+        weak.timer = timer
+        return timer
       end)
       schedule()
       error('GOT HERE')
@@ -159,7 +174,32 @@ describe('async', function()
 
     assert(not ok, 'Expected error')
     assert(assert(err):match('GOT HERE'), task:traceback(err))
-    assert(timer and timer:is_closing() == true, 'Timer is not closing')
+
+    assert(weak.timer and weak.timer:is_closing() == true, 'Timer is not closing')
+
+    collectgarbage('collect')
+    assert(not next(weak), 'Resources not collected')
+  end)
+
+  it_exec('handle tasks that complete', function()
+    local weak = setmetatable({}, { __mode = 'v' })
+
+    local task = arun(function()
+      await(1, function(callback)
+        local timer = assert(vim.uv.new_timer())
+        timer:start(1, 0, callback)
+        weak.timer = timer
+        return timer
+      end)
+      schedule()
+    end)
+
+    task:wait(10)
+
+    assert(weak.timer and weak.timer:is_closing() == true, 'Timer is not closing')
+
+    collectgarbage('collect')
+    assert(not next(weak), 'Resources not collected')
   end)
 
   it_exec('can wait on an empty task', function()
@@ -171,12 +211,12 @@ describe('async', function()
     end)
 
     task:await(function()
-      assert(a == 2)
       did_cb = true
     end)
 
     task:wait(100)
 
+    assert(a == 2)
     assert(did_cb)
   end)
 
@@ -209,12 +249,12 @@ describe('async', function()
   end)
 
   it_exec('can await a arun task', function()
-    local a = assert(arun(function()
+    local a = arun(function()
       return await(arun(function()
         await(1, vim.schedule)
         return 'JJ'
       end))
-    end):wait(10))
+    end):wait(10)
 
     assert(a == 'JJ')
   end)
@@ -246,12 +286,57 @@ describe('async', function()
     end)
 
     local ok, err = task2:pwait(1000)
-    assert(not ok and err:match('GOT HERE'), task:traceback(err))
+    assert(not ok and err:match('async_spec.lua:%d+: GOT HERE'), task2:traceback(err))
 
     assert(
       vim.deep_equal(expected, results),
       ('%s does not equal %s'):format(vim.inspect(results), vim.inspect(expected))
     )
+  end)
+
+  it_exec('can provide a traceback for nested tasks', function()
+    local function t1()
+      await(arun(function()
+        error('GOT HERE')
+      end))
+    end
+
+    local task = arun(function()
+      await(arun(function()
+        await(arun(function()
+          await(arun(function()
+              t1()
+          end))
+        end))
+      end))
+    end)
+
+    -- Normal tracebacks look like:
+    -- > stack traceback:
+    -- >         [C]: in function 'error'
+    -- >         test/async_spec.lua:312: in function 'a'
+    -- >         test/async_spec.lua:315: in function 'b'
+    -- >         test/async_spec.lua:318: in function 'c'
+    -- >         test/async_spec.lua:320: in function <test/async_spec.lua:310>
+    -- >         [C]: in function 'xpcall'
+    -- >         test/async_spec.lua:310: in function <test/async_spec.lua:297>
+    -- >         [string "<nvim>"]:2: in main chunk
+
+    local ok, err = task:pwait(1000)
+    assert(not ok)
+
+    local m = [[test/async_spec.lua:%d+: GOT HERE
+stack traceback:
+        %[thread: 0x%x+%] %[C%]: in function 'error'
+        %[thread: 0x%x+%] test/async_spec.lua:%d+: in function <test/async_spec.lua:%d+>
+        %[thread: 0x%x+%] test/async_spec.lua:%d+: in function 't1'
+        %[thread: 0x%x+%] test/async_spec.lua:%d+: in function <test/async_spec.lua:%d+>
+        %[thread: 0x%x+%] test/async_spec.lua:%d+: in function <test/async_spec.lua:%d+>
+        %[thread: 0x%x+%] test/async_spec.lua:%d+: in function <test/async_spec.lua:%d+>
+        %[thread: 0x%x+%] test/async_spec.lua:%d+: in function <test/async_spec.lua:%d+>]]
+
+    local tb = task:traceback(err):gsub('\t', '        ')
+    assert(tb:match(m), tb)
   end)
 
   -- TODO: test error message has correct stack trace when:
