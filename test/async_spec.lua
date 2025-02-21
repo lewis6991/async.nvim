@@ -221,7 +221,7 @@ describe('async', function()
   end)
 
   it_exec('can iterate tasks', function()
-    local tasks = {} --- @type vim.async.Task[]
+    local tasks = {} --- @type async.Task[]
 
     local expected = {} --- @type table[]
 
@@ -237,8 +237,8 @@ describe('async', function()
 
     local results = {} --- @type table[]
     arun(function()
-      for i, err, result in Async.iter(tasks) do
-        results[i] = { err, result }
+      for i, err, r1, r2 in Async.iter(tasks) do
+        results[i] = { err, {r1, r2} }
       end
     end):wait(1000)
 
@@ -256,7 +256,7 @@ describe('async', function()
       end))
     end):wait(10)
 
-    assert(a == 'JJ')
+    assert(a == 'JJ', 'GOT '..tostring(a))
   end)
 
   it_exec('handle errors in wrapped functions', function()
@@ -279,8 +279,9 @@ describe('async', function()
 
     local results = {} --- @type table[]
     local task2 = arun(function()
-      for i, err, result in Async.iter({ task }) do
-        results[i] = { err, result }
+      for i, err, r1, r2 in Async.iter({ task }) do
+        assert(not err, err)
+        results[i] = { err, { r1, r2 } }
       end
       error('GOT HERE')
     end)
@@ -336,7 +337,7 @@ stack traceback:
         %[thread: 0x%x+%] test/async_spec.lua:%d+: in function <test/async_spec.lua:%d+>]]
 
     local tb = task:traceback(err):gsub('\t', '        ')
-    assert(tb:match(m), tb)
+    assert(tb:match(m), 'ERROR: '..tb)
   end)
 
   -- TODO: test error message has correct stack trace when:
