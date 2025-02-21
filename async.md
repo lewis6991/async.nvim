@@ -4,45 +4,75 @@ Small async library for Neovim plugins
 
 ## Functions
 
-### `sync(argc, func)`
+### `async(func)`
 
-Use this to create a function which executes in an async context but
- called from a non-async context.  Inherently this cannot return anything
- since it is non-blocking
+Create an async function.
 
 #### Parameters:
 
-* `argc` (`integer`):  The number of arguments of func. Defaults to 0
-* `func` (`function`):
+* `func` (`function`)
+
+#### Returns:
+
+* `vim.async.Task`: handle to running async function.
 
 ---
 
-### `wait(argc, func, ...)`
+### `await(argc, func, ...)`
+
+Must be run in an async context.
+
+Asynchronously wait on a callback style function.
 
 #### Parameters:
 
-* `argc` (`integer`):  The number of arguments of func. Defaults to 0
+* `argc` (`integer`):  Position of the callback argument in `func`.
 * `func` (`function`):
 * `...` (`any[]`): arguments for `func`
 
+#### Returns:
+
+Return values of `func`.
+
 ---
 
-### `run(func)`
+### `arun(func)`
 
 #### Parameters:
 
 * `func` (`function`):
 
+#### Returns:
+
+* `vim.async.Task`: handle to running async function.
+
 ---
 
-### `wrap(argc, func, argc)`
+### `awrap(argc, func)`
 
-Creates an async function with a callback style function.
+Wraps callback style function so it asynchronously waits
+in an async context.
 
 #### Parameters:
 
 * `argc` (`integer`):  The number of arguments of func. Must be included.
 * `func` (`function`):  A callback style function to be converted. The last argument must be the callback.
+
+#### Returns:
+
+Wrapped function of `func`.
+
+Must be run in an async context.
+
+---
+
+### `iter(tasks)`
+
+Must be run in an async context.
+
+#### Returns:
+
+Iterator function that yields the results of each task.
 
 ---
 
@@ -59,18 +89,9 @@ Run a collection of async functions (`thunks`) concurrently and return when
 
 ---
 
-### `curry(fn, ...)`
-
-Partially applying arguments to an async function
-
-#### Parameters:
-
-* `fn` (`function`):
-* `...`:  arguments to apply to `fn`
-
----
-
-### `scheduler()`
+### `schedule()`
 
 An async function that when called will yield to the Neovim scheduler to be
  able to call the API.
+
+Must be run in an async context.
