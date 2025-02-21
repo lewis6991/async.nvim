@@ -1,5 +1,8 @@
 # async.nvim
-Small async library for Neovim plugins
+
+Async library for Neovim plugins
+
+🚧 WIP and Under Construction 🚧
 
 ## Example
 
@@ -79,3 +82,8 @@ The arguments provided to the callback in the original function are simply retur
 
 Additionally because `run_job_a` returns an object with a `close()` method (as a `uv_process_t`), `asrync.arun` will automatically `close` the handle if either the task completes or is interuppted,
 
+
+# Other async libs
+
+- [coop.nvim](https://github.com/gregorias/coop.nvim)
+- [nvim-nio](https://github.com/nvim-neotest/nvim-nio)
