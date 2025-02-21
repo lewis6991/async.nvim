@@ -1,3 +1,6 @@
+
+local pcall = copcall or pcall
+
 --- @param ... any
 --- @return {[integer]: any, n: integer}
 local function pack_len(...)
