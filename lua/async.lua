@@ -34,7 +34,7 @@ end
 --- Base class for async tasks. Async functions should return a subclass of
 --- this. This is designed specifically to be a base class of uv_handle_t
 --- @class async.Handle
---- @field close fun(self: async.Handle, callback: fun())
+--- @field close fun(self: async.Handle, callback?: fun())
 --- @field is_closing? fun(self: async.Handle): boolean
 
 --- @alias vim.async.CallbackFn
@@ -104,10 +104,16 @@ local MAX_TIMEOUT = 2 ^ 31 - 1
 --- stack trace of the error.
 ---
 --- Example:
+--- ```lua
 ---
 ---   local ok, err_or_result = task:pwait(10)
 ---
----   local _, result = assert(task:pwait(10), task:traceback())
+---   if not ok then
+---     error(task:traceback(err_or_result))
+---   end
+---
+---   local _, result = assert(task:pwait(10))
+--- ```
 ---
 --- Can be called if a task is closing.
 --- @param timeout? integer
@@ -126,13 +132,19 @@ function Task:pwait(timeout)
   elseif self._err then
     return false, self._err
   else
-    -- TODO(lewis6991): test me
     return true, unpack_len(self._result)
   end
 end
 
 --- Synchronously wait for a task to finish (blocking)
---- @param timeout? integer
+---
+--- Example:
+--- ```lua
+---   local result = task:wait(10) -- wait for 10ms or else error
+---
+---   local result = task:wait() -- wait indefinitely
+--- ```
+--- @param timeout? integer Timeout in milliseconds
 --- @return any ... result
 function Task:wait(timeout)
   local res = pack_len(self:pwait(timeout))
@@ -174,6 +186,9 @@ function Task:_traceback(msg, _lvl)
   return msg
 end
 
+--- Get the traceback of a task when it is not active.
+--- Will also get the traceback of nested tasks.
+---
 --- @param msg? string
 --- @return string
 function Task:traceback(msg)
@@ -190,7 +205,7 @@ function Task:raise_on_error()
   return self
 end
 
---- @package
+--- @private
 --- @param err? any
 --- @param result? {[integer]: any, n: integer}
 function Task:_finish(err, result)
@@ -218,6 +233,10 @@ function Task:is_closing()
   return self._closing
 end
 
+--- Close the task and all its children.
+--- If callback is provided it will run asynchronously,
+--- else it will run synchronously.
+---
 --- @param callback? fun()
 function Task:close(callback)
   if self:_completed() then
@@ -227,24 +246,33 @@ function Task:close(callback)
     return
   end
 
-  if callback then
-    self:await(function()
-      callback()
-    end)
-  end
-
   if self._closing then
     return
   end
 
   self._closing = true
 
-  if self._current_child then
-    self._current_child:close(function()
+  if callback then -- async
+    if self._current_child then
+      self._current_child:close(function()
+        self:_finish('closed')
+        callback()
+      end)
+    else
       self:_finish('closed')
+      callback()
+    end
+  else -- sync
+    if self._current_child then
+      self._current_child:close(function()
+        self:_finish('closed')
+      end)
+    else
+      self:_finish('closed')
+    end
+    vim.wait(0, function()
+      return self:_completed()
     end)
-  else
-    self:_finish('closed')
   end
 end
 
