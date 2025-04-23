@@ -180,6 +180,16 @@ function Task:traceback(msg)
   return self:_traceback(msg)
 end
 
+--- If a task completes with an error, raise the error
+function Task:raise_on_error()
+  self:await(function(err)
+    if err then
+      error(self:_traceback(err), 0)
+    end
+  end)
+  return self
+end
+
 --- @package
 --- @param err? any
 --- @param result? {[integer]: any, n: integer}
