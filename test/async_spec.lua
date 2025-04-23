@@ -238,7 +238,7 @@ describe('async', function()
     local results = {} --- @type table[]
     arun(function()
       for i, err, r1, r2 in Async.iter(tasks) do
-        results[i] = { err, {r1, r2} }
+        results[i] = { err, { r1, r2 } }
       end
     end):wait(1000)
 
@@ -256,7 +256,7 @@ describe('async', function()
       end))
     end):wait(10)
 
-    assert(a == 'JJ', 'GOT '..tostring(a))
+    assert(a == 'JJ', 'GOT ' .. tostring(a))
   end)
 
   it_exec('handle errors in wrapped functions', function()
@@ -306,7 +306,7 @@ describe('async', function()
       await(arun(function()
         await(arun(function()
           await(arun(function()
-              t1()
+            t1()
           end))
         end))
       end))
@@ -337,7 +337,7 @@ stack traceback:
         %[thread: 0x%x+%] test/async_spec.lua:%d+: in function <test/async_spec.lua:%d+>]]
 
     local tb = task:traceback(err):gsub('\t', '        ')
-    assert(tb:match(m), 'ERROR: '..tb)
+    assert(tb:match(m), 'ERROR: ' .. tb)
   end)
 
   -- TODO: test error message has correct stack trace when:

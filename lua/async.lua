@@ -1,4 +1,3 @@
-
 local pcall = copcall or pcall
 
 --- @param ... any
@@ -9,10 +8,11 @@ end
 
 --- like unpack() but use the length set by F.pack_len if present
 --- @param t? { [integer]: any, n?: integer }
+--- @param first? integer
 --- @return ...any
-local function unpack_len(t)
+local function unpack_len(t, first)
   if t then
-    return unpack(t, 1, t.n or table.maxn(t))
+    return unpack(t, first or 1, t.n or table.maxn(t))
   end
 end
 
@@ -37,7 +37,8 @@ end
 --- @field close fun(self: async.Handle, callback: fun())
 --- @field is_closing? fun(self: async.Handle): boolean
 
---- @alias vim.async.CallbackFn fun(...: any): async.Handle?
+--- @alias vim.async.CallbackFn
+--- | fun(callback: fun(...: any)): async.Handle?
 
 --- @class async.Task : async.Handle
 --- @field private _callbacks table<integer,fun(err?: any, ...: any)>
@@ -135,15 +136,13 @@ end
 --- @return any ... result
 function Task:wait(timeout)
   local res = pack_len(self:pwait(timeout))
-
-  local stat = table.remove(res, 1)
-  res.n = res.n - 1
+  local stat = res[1]
 
   if not stat then
-    error(res[1])
+    error(self:traceback(res[2]))
   end
 
-  return unpack_len(res)
+  return unpack_len(res, 2)
 end
 
 --- @private
@@ -158,17 +157,17 @@ function Task:_traceback(msg, _lvl)
   local child = self._current_child
   if getmetatable(child) == Task then
     --- @cast child async.Task
-    msg = child:_traceback(msg , _lvl + 1)
+    msg = child:_traceback(msg, _lvl + 1)
   end
 
   local tblvl = getmetatable(child) == Task and 2 or nil
-  msg = msg .. debug.traceback(self._thread, '', tblvl):gsub('\n\t', '\n\t'..thread)
+  msg = (msg or '') .. debug.traceback(self._thread, '', tblvl):gsub('\n\t', '\n\t' .. thread)
 
   if _lvl == 0 then
     --- @type string
     msg = msg
       :gsub('\nstack traceback:\n', '\nSTACK TRACEBACK:\n', 1)
-      :gsub("\nstack traceback:\n", '\n')
+      :gsub('\nstack traceback:\n', '\n')
       :gsub('\nSTACK TRACEBACK:\n', '\nstack traceback:\n', 1)
   end
 
@@ -189,9 +188,18 @@ function Task:_finish(err, result)
   self._err = err
   self._result = result
   threads[self._thread] = nil
+
+  local errs = {} --- @type string[]
   for _, cb in pairs(self._callbacks) do
-    -- Needs to be pcall as step() (who calls this function) cannot error
-    pcall(cb, err, unpack_len(result))
+    --- @type boolean, string
+    local ok, cb_err = pcall(cb, err, unpack_len(result))
+    if not ok then
+      errs[#errs + 1] = cb_err
+    end
+  end
+
+  if #errs > 0 then
+    error(table.concat(errs, '\n'), 0)
   end
 end
 
@@ -230,16 +238,6 @@ function Task:close(callback)
   end
 end
 
---- @param callback function
---- @param ... any
---- @return fun()
-local function wrap_cb(callback, ...)
-  local args = pack_len(...)
-  return function()
-    return callback(unpack_len(args))
-  end
-end
-
 --- @param obj any
 --- @return boolean
 local function is_async_handle(obj)
@@ -274,7 +272,10 @@ function Task:_resume(...)
         --- @cast r async.Handle
         -- We must close children before we resume to ensure
         -- all resources are collected.
-        r:close(wrap_cb(self._resume, self, ...))
+        local args = pack_len(...)
+        r:close(function()
+          self:_resume(unpack_len(args))
+        end)
       else
         self:_resume(...)
       end
@@ -344,22 +345,19 @@ end
 --- @param task async.Task
 --- @return any ...
 local function await_task(task)
-  --- @param callback fun(err?: string, result?: any[])
-  --- @return function
-  local err, result = yield(function(callback)
-    task:await(function(err, ...)
-      callback(err, pack_len(...))
-    end)
+  local res = pack_len(yield(function(callback)
+    task:await(callback)
     return task
-  end)
+  end))
+
+  local err = res[1]
 
   if err then
     -- TODO(lewis6991): what is the correct level to pass?
     error(err, 0)
   end
-  assert(result)
 
-  return unpack_len(result)
+  return unpack_len(res, 2)
 end
 
 --- Asynchronous blocking wait
@@ -370,7 +368,7 @@ end
 local function await_cbfun(argc, fun, ...)
   local args = pack_len(...)
 
-  --- @param callback fun(success: boolean, result: any[])
+  --- @param callback fun(...:any)
   --- @return any?
   return yield(function(callback)
     args[argc] = callback
@@ -555,7 +553,6 @@ function M.iter(tasks)
 end
 
 do -- join()
-
   --- @param results table<integer,table>
   --- @param i integer
   --- @param ... any
@@ -613,7 +610,6 @@ do -- join()
     assert(running(), 'Not in async context')
     return drain_iter(M.iter(tasks))
   end
-
 end
 
 -- TODO(lewis6991): joinany
