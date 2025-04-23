@@ -246,24 +246,20 @@ local function is_async_handle(obj)
 end
 
 function Task:_resume(...)
-  --- @type [string|vim.async.CallbackFn]
+  --- @type [boolean, string|vim.async.CallbackFn]
   local ret = pack_len(coroutine.resume(self._thread, ...))
-  local stat = table.remove(ret, 1) --- @type boolean
-
-  ---@diagnostic disable-next-line: inject-field,no-unknown
-  ret.n = ret.n - 1
+  local stat = ret[1]
 
   if not stat then
     -- Coroutine had error
-    self:_finish(ret[1])
+    self:_finish(ret[2])
   elseif coroutine.status(self._thread) == 'dead' then
-    --- @cast ret {[integer]: any, n: integer}
     -- Coroutine finished
-    self:_finish(nil, ret)
+    local result = pack_len(unpack_len(ret, 2))
+    self:_finish(nil, result)
   else
-    --- @cast ret [vim.async.CallbackFn]
-
-    local fn = ret[1]
+    local fn = ret[2]
+    --- @cast fn -string
 
     -- TODO(lewis6991): refine error handler to be more specific
     local ok, r
