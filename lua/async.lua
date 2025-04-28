@@ -333,6 +333,20 @@ function Task:status()
   return coroutine.status(self._thread)
 end
 
+--- Run a function in an async context, asynchronously.
+---
+--- Examples:
+--- ```lua
+--- -- The two below blocks are equivalent:
+---
+--- -- Run a uv function and wait for it
+--- local stat = async.arun(function()
+---     return async.await(2, vim.uv.fs_stat, 'foo.txt')
+--- end):wait()
+---
+--- -- Since uv functions have sync versions. You can just do:
+--- local stat = vim.fs_stat('foo.txt')
+--- ```
 --- @param func function
 --- @param ... any
 --- @return async.Task
