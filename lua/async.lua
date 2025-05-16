@@ -37,8 +37,7 @@ end
 --- @field close fun(self: async.Handle, callback?: fun())
 --- @field is_closing? fun(self: async.Handle): boolean
 
---- @alias async.CallbackFn
---- | fun(callback: fun(...: any)): async.Handle?
+--- @alias async.CallbackFn fun(...: any): async.Handle?
 
 --- @class async.Task : async.Handle
 --- @field package _callbacks table<integer,fun(err?: any, ...: any)>
@@ -286,6 +285,7 @@ local function is_async_handle(obj)
   return (ty == 'table' or ty == 'userdata') and vim.is_callable(obj.close)
 end
 
+--- @param ... any
 function Task:_resume(...)
   --- @type [boolean, string|async.CallbackFn]
   local ret = pack_len(coroutine.resume(self._thread, ...))
@@ -388,6 +388,7 @@ function M.status(task)
   end
 end
 
+--- @async
 --- @generic R1, R2, R3, R4
 --- @param fun fun(callback: fun(r1: R1, r2: R2, r3: R3, r4: R4)): any?
 --- @return R1, R2, R3, R4
@@ -396,9 +397,12 @@ local function yield(fun)
   return coroutine.yield(fun)
 end
 
+--- @async
 --- @param task async.Task
 --- @return any ...
 local function await_task(task)
+  --- @param callback fun(err?: string, ...: any)
+  --- @return function
   local res = pack_len(yield(function(callback)
     task:await(callback)
     return task
@@ -475,6 +479,7 @@ end
 ---   end
 --- end)
 --- ```
+--- @async
 --- @overload fun(argc: integer, func: async.CallbackFn, ...:any): any ...
 --- @overload fun(task: async.Task): any ...
 --- @overload fun(taskfun: async.TaskFun): any ...
@@ -523,8 +528,44 @@ end
 function M.awrap(argc, func)
   assert(type(argc) == 'number')
   assert(type(func) == 'function')
+  --- @async
   return function(...)
     return M.await(argc, func, ...)
+  end
+end
+
+-- TODO(lewis6991): this needs more iteration/work
+--- Use this to create a function which executes in an async context but
+--- called from a non-async context.
+---
+--- The returned function will take the same arguments as the original function.
+--- If argc is provided, the function will have an additional callback function
+--- as the last argument which will be called when the function completes.
+---
+--- @generic F: function
+--- @param argc integer
+--- @param func F
+--- @return F
+function M._create(argc, func)
+  assert(type(argc) == 'number')
+  assert(type(func) == 'function')
+
+  --- @param ... any
+  --- @return any ...
+  return function(...)
+    local task = Task._new(func)
+
+    task:raise_on_error()
+
+    --- @type fun(err:string?, ...:any)
+    local callback = argc and select(argc + 1, ...) or nil
+    if callback and type(callback) == 'function' then
+      task:await(callback)
+    end
+
+    task:_resume(unpack({ ... }, 1, argc))
+
+    return task
   end
 end
 
@@ -715,6 +756,7 @@ do -- join()
     return drain_iter(M.iter(tasks))
   end
 
+  --- @async
   --- @param tasks async.Task[]
   --- @return integer?, any?, ...?
   function M.joinany(tasks)
