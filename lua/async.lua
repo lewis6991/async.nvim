@@ -361,6 +361,7 @@ end
 
 --- @class async.TaskFun
 --- @field package _fun fun(...: any): any
+--- @operator call(...): any
 local TaskFun = {}
 TaskFun.__index = TaskFun
 
@@ -369,6 +370,8 @@ function TaskFun:__call(...)
 end
 
 --- Create an async function
+--- @param fun function
+--- @return async.TaskFun
 function M.async(fun)
   return setmetatable({ _fun = fun }, TaskFun)
 end
