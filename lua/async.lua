@@ -37,11 +37,12 @@ end
 --- @field close fun(self: async.Handle, callback?: fun())
 --- @field is_closing? fun(self: async.Handle): boolean
 
---- @alias vim.async.CallbackFn
+--- @alias async.CallbackFn
 --- | fun(callback: fun(...: any)): async.Handle?
 
 --- @class async.Task : async.Handle
---- @field private _callbacks table<integer,fun(err?: any, ...: any)>
+--- @field package _callbacks table<integer,fun(err?: any, ...: any)>
+--- @field package _callback_pos integer
 --- @field private _thread thread
 ---
 --- Tasks can call other async functions (task of callback functions)
@@ -69,6 +70,7 @@ function Task._new(func)
     _closing = false,
     _thread = thread,
     _callbacks = {},
+    _callback_pos = 1,
   }, Task)
 
   threads[thread] = self
@@ -84,7 +86,8 @@ function Task:await(callback)
     -- Already finished or closed
     callback(self._err, unpack_len(self._result))
   else
-    table.insert(self._callbacks, callback)
+    self._callbacks[self._callback_pos] = callback
+    self._callback_pos = self._callback_pos + 1
   end
 end
 
@@ -284,7 +287,7 @@ local function is_async_handle(obj)
 end
 
 function Task:_resume(...)
-  --- @type [boolean, string|vim.async.CallbackFn]
+  --- @type [boolean, string|async.CallbackFn]
   local ret = pack_len(coroutine.resume(self._thread, ...))
   local stat = ret[1]
 
@@ -410,7 +413,7 @@ end
 
 --- Asynchronous blocking wait
 --- @param argc integer
---- @param fun vim.async.CallbackFn
+--- @param fun async.CallbackFn
 --- @param ... any func arguments
 --- @return any ...
 local function await_cbfun(argc, fun, ...)
@@ -469,7 +472,7 @@ end
 ---   end
 --- end)
 --- ```
---- @overload fun(argc: integer, func: vim.async.CallbackFn, ...:any): any ...
+--- @overload fun(argc: integer, func: async.CallbackFn, ...:any): any ...
 --- @overload fun(task: async.Task): any ...
 --- @overload fun(taskfun: async.TaskFun): any ...
 function M.await(...)
@@ -512,7 +515,7 @@ end
 ---
 --- local atimer = async.awrap(
 --- @param argc integer
---- @param func vim.async.CallbackFn
+--- @param func async.CallbackFn
 --- @return async function
 function M.awrap(argc, func)
   assert(type(argc) == 'number')
@@ -526,6 +529,34 @@ if vim.schedule then
   --- An async function that when called will yield to the Neovim scheduler to be
   --- able to call the API.
   M.schedule = M.awrap(1, vim.schedule)
+end
+
+--- Create a function that runs a function when it is garbage collected.
+--- @generic F
+--- @param f F
+--- @param gc fun()
+--- @return F
+local function gc_fun(f, gc)
+  local proxy = newproxy(true)
+  local proxy_mt = getmetatable(proxy)
+  proxy_mt.__gc = gc
+  proxy_mt.__call = function(_, ...)
+    return f(...)
+  end
+
+  return proxy
+end
+
+--- @param task_cbs table<async.Task,function>
+local function gc_cbs(task_cbs)
+  for task, tcb in pairs(task_cbs) do
+    for j, cb in pairs(task._callbacks) do
+      if cb == tcb then
+        task._callbacks[j] = nil
+        break
+      end
+    end
+  end
 end
 
 --- @async
@@ -568,8 +599,22 @@ function M.iter(tasks)
   local waiter = nil
 
   local remaining = #tasks
+
+  local task_cbs = {} --- @type table<async.Task,function>
+
+  --- If can_gc_cbs is true, then the iterator function has been garbage
+  --- collected and means any awaiters can also be garbage collected. The
+  --- only time we can't do this is if with the special case when iter() is
+  --- called anonymously (`local i = async.iter(tasks)()`), so we should not
+  --- garbage collect the callbacks until at least one awaiter is called.
+  local can_gc_cbs = false
+
   for i, task in ipairs(tasks) do
-    task:await(function(err, ...)
+    local function cb(err, ...)
+      if can_gc_cbs == true then
+        gc_cbs(task_cbs)
+      end
+
       local callback = waiter
 
       -- Clear waiter before calling it
@@ -583,21 +628,29 @@ function M.iter(tasks)
         -- Task finished before Iterator was called. Store results.
         table.insert(results, pack_len(i, err, ...))
       end
-    end)
+    end
+
+    task_cbs[task] = cb
+    task:await(cb)
   end
 
-  --- @param callback fun(i?: integer, err?: any, ...: any)
-  return M.awrap(1, function(callback)
-    if next(results) then
-      local res = table.remove(results, 1)
-      callback(unpack_len(res))
-    elseif remaining == 0 then
-      callback() -- finish
-    else
-      assert(not waiter, 'internal error: waiter already set')
-      waiter = callback
+  return gc_fun(
+    M.awrap(1, function(callback)
+      if next(results) then
+        local res = table.remove(results, 1)
+        callback(unpack_len(res))
+      elseif remaining == 0 then
+        callback() -- finish
+      else
+        assert(not waiter, 'internal error: waiter already set')
+        waiter = callback
+      end
+    end),
+    function()
+      -- Don't gc callbacks just yet. Wait until at least one of them is called.
+      can_gc_cbs = true
     end
-  end)
+  )
 end
 
 do -- join()
@@ -658,8 +711,12 @@ do -- join()
     assert(running(), 'Not in async context')
     return drain_iter(M.iter(tasks))
   end
-end
 
--- TODO(lewis6991): joinany
+  --- @param tasks async.Task[]
+  --- @return integer?, any?, ...?
+  function M.joinany(tasks)
+    return M.iter(tasks)()
+  end
+end
 
 return M
