@@ -73,3 +73,11 @@ luals-check: luals nvim-test
 			--logpath=. \
 			--configpath=../.luarc.json \
 			--check=lua
+
+.PHONY: doc
+doc:
+	emmylua_doc_cli \
+		--input lua \
+		--output . \
+		--format=json
+	./docgen.lua doc.json doc/lua-async.txt

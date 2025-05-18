@@ -65,4 +65,22 @@ function M.join_n_2(max_jobs, task_funs)
   end)
 end
 
+--- Like async.join, but with a limit on the number of concurrent tasks.
+--- @async
+--- @param max_jobs integer
+--- @param task_funs async.TaskFun[]
+function M.join_n_3(max_jobs, task_funs)
+  if #task_funs == 0 then
+    return
+  end
+
+  local semaphore = async.semaphore(max_jobs)
+
+  for _, task_fun in ipairs(task_funs) do
+    semaphore:with(function()
+      async.await(task_fun)
+    end)
+  end
+end
+
 return M
