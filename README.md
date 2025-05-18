@@ -52,7 +52,7 @@ First we turn this into an async function using `wrap`:
 
 local async = require('async')
 
-local run_job_a = async.awrap(3, run_job)
+local run_job_a = async.wrap(3, run_job)
 ```
 
 Now we need to create a top level function to initialize the async context. To do this we can use `void` or `sync`.
@@ -62,7 +62,7 @@ Note: the main difference between `void` and `sync` is that `sync` functions can
 For this example we will use `void`:
 
 ```lua
-local code = async.arun(function()
+local code = async.run(function()
   local code1 = run_job_a('echo', {'foo'})
   if code1 ~= 0 then
     return
@@ -80,7 +80,7 @@ end):wait()
 We can now call `run_job_a` in linear imperative fashion without needing to define callbacks.
 The arguments provided to the callback in the original function are simply returned by the async version.
 
-Additionally because `run_job_a` returns an object with a `close()` method (as a `uv_process_t`), `asrync.arun` will automatically `close` the handle if either the task completes or is interuppted,
+Additionally because `run_job_a` returns an object with a `close()` method (as a `uv_process_t`), `asrync.run` will automatically `close` the handle if either the task completes or is interuppted,
 
 ## Kinds of async functions
 
@@ -121,7 +121,7 @@ Cons:
 ## Async function nesting
 
 Unlike Python or Javascript, in async.nvim not all functions need to be defined/created as such.
-Instead async functions can be regular functions but they must be executed in an async context (via `async.arun()`).
+Instead async functions can be regular functions but they must be executed in an async context (via `async.run()`).
 If a function is created with `async.async()` then when it is called it execute in a new async context and therefore will be non-blocking.
 
 ```lua
@@ -141,8 +141,8 @@ foo(a, b)
 foo(a, b):wait()
 -- sync, blocking
 
--- use async.arun to create an async context
-async.arun(function()
+-- use async.run to create an async context
+async.run(function()
 
   bar(a, b)
   -- async, blocking
