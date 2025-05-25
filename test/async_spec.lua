@@ -17,9 +17,9 @@ describe('async', function()
     exec_lua(function()
       _G.Async = require('async')
       _G.await = Async.await
-      _G.arun = Async.arun
+      _G.run = Async.run
       _G.async = Async.async
-      _G.awrap = Async.awrap
+      _G.wrap = Async.wrap
       _G.schedule = Async.schedule
     end)
   end)
@@ -35,7 +35,7 @@ describe('async', function()
       return obj
     end
 
-    arun(function()
+    run(function()
       --- @type integer
       local code1 = await(3, spawn, 'echo', { args = { 'foo' } })
       assert(code1 == 0)
@@ -56,7 +56,7 @@ describe('async', function()
   it_exec('callback function can be closed', function()
     local weak = setmetatable({}, { __mode = 'v' })
 
-    local task = arun(function()
+    local task = run(function()
       await(1, function(_callback)
         -- Never call callback
         local timer = vim.uv.new_timer()
@@ -77,11 +77,11 @@ describe('async', function()
     assert(not next(weak), 'Resources not collected')
   end)
 
-  -- Same as test above but uses async and awrap
+  -- Same as test above but uses async and wrap
   it_exec('callback function can be closed (2)', function()
     local weak = setmetatable({}, { __mode = 'v' })
 
-    local wfn = awrap(1, function(_callback)
+    local wfn = wrap(1, function(_callback)
       -- Never call callback
       local timer = vim.uv.new_timer()
       weak.timer = timer
@@ -108,8 +108,8 @@ describe('async', function()
   it_exec('callback function can be closed (nested)', function()
     local weak = setmetatable({}, { __mode = 'v' })
 
-    local task = arun(function()
-      await(arun(function()
+    local task = run(function()
+      await(run(function()
         await(1, function(_callback)
           -- Never call callback
           local timer = assert(vim.uv.new_timer())
@@ -132,7 +132,7 @@ describe('async', function()
   it_exec('can timeout tasks', function()
     local weak = setmetatable({}, { __mode = 'v' })
 
-    local task = arun(function()
+    local task = run(function()
       await(1, function(_callback)
         -- Never call callback
         local timer = assert(vim.uv.new_timer())
@@ -159,7 +159,7 @@ describe('async', function()
   it_exec('handle tasks that error', function()
     local weak = setmetatable({}, { __mode = 'v' })
 
-    local task = arun(function()
+    local task = run(function()
       await(1, function(callback)
         local timer = assert(vim.uv.new_timer())
         timer:start(1, 0, callback)
@@ -184,7 +184,7 @@ describe('async', function()
   it_exec('handle tasks that complete', function()
     local weak = setmetatable({}, { __mode = 'v' })
 
-    local task = arun(function()
+    local task = run(function()
       await(1, function(callback)
         local timer = assert(vim.uv.new_timer())
         timer:start(1, 0, callback)
@@ -206,7 +206,7 @@ describe('async', function()
     local did_cb = false
     local a = 1
 
-    local task = arun(function()
+    local task = run(function()
       a = a + 1
     end)
 
@@ -226,7 +226,7 @@ describe('async', function()
     local expected = {} --- @type table[]
 
     for i = 1, 10 do
-      tasks[i] = arun(function()
+      tasks[i] = run(function()
         if i % 2 == 0 then
           schedule()
         end
@@ -236,7 +236,7 @@ describe('async', function()
     end
 
     local results = {} --- @type table[]
-    arun(function()
+    run(function()
       for i, err, r1, r2 in Async.iter(tasks) do
         results[i] = { err, { r1, r2 } }
       end
@@ -248,9 +248,9 @@ describe('async', function()
     )
   end)
 
-  it_exec('can await a arun task', function()
-    local a = arun(function()
-      return await(arun(function()
+  it_exec('can await a run task', function()
+    local a = run(function()
+      return await(run(function()
         await(1, vim.schedule)
         return 'JJ'
       end))
@@ -260,7 +260,7 @@ describe('async', function()
   end)
 
   it_exec('handle errors in wrapped functions', function()
-    local task = arun(function()
+    local task = run(function()
       await(1, function(_callback)
         error('ERROR')
       end)
@@ -270,7 +270,7 @@ describe('async', function()
   end)
 
   it_exec('iter tasks followed by error', function()
-    local task = arun(function()
+    local task = run(function()
       schedule()
       return 'FINISH', 1
     end)
@@ -278,7 +278,7 @@ describe('async', function()
     local expected = { { nil, { 'FINISH', 1 } } }
 
     local results = {} --- @type table[]
-    local task2 = arun(function()
+    local task2 = run(function()
       for i, err, r1, r2 in Async.iter({ task }) do
         assert(not err, err)
         results[i] = { err, { r1, r2 } }
@@ -297,15 +297,15 @@ describe('async', function()
 
   it_exec('can provide a traceback for nested tasks', function()
     local function t1()
-      await(arun(function()
+      await(run(function()
         error('GOT HERE')
       end))
     end
 
-    local task = arun(function()
-      await(arun(function()
-        await(arun(function()
-          await(arun(function()
+    local task = run(function()
+      await(run(function()
+        await(run(function()
+          await(run(function()
             t1()
           end))
         end))

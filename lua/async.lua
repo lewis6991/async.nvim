@@ -1,5 +1,116 @@
 local pcall = copcall or pcall
 
+--- Other notes to include:
+---
+--- - unlike python, async functions do not need to be awaited when within an
+--- async context, however Tasks and Task functions do.
+
+--- The modules implements an asynchronous programming library for Neovim,
+--- enabling developers to write non-blocking, coroutine-based code. Below is a
+--- summary of its key features and components:
+---
+--- 1. Async Contexts:
+---    - Functions can run asynchronously using Lua coroutines.
+---    - Async functions are annotated with `@async` and must run within an async context.
+---
+--- 2. Task Management:
+---    - [async.Task]: Represents a wrapped coroutine that can be paused and
+---      resumed.
+---    - Tasks can be awaited, canceled, or waited synchronously.
+---    - Provides error handling and stack trace generation for debugging.
+---
+--- 3. Await Mechanism:
+---    - [async.await()]: Allows blocking on asynchronous operations, such as
+---      tasks or callback-based functions.
+---    - Supports multiple overloads for tasks, task functions, and callback
+---      functions.
+---
+--- 4. Task Wrapping:
+---    - [async.wrap()]: Converts any callback-based functions into async functions.
+---    - [async.async()]: Converts async functions into callable task functions.
+---
+--- 5. Concurrency Utilities:
+---    - [async.iter()]: Iterates over multiple tasks, yielding their results as
+---      they complete.
+---    - [async.join()]: Waits for all tasks to complete and collects their
+---      results.
+---    - [async.joinany()]: Waits for the first task to complete and returns its
+---      result.
+---
+--- 6. Synchronization Primitives:
+---    - [async.event()]: Implements an event signaling mechanism for tasks to
+---      wait and notify.
+---    - [async.queue()]: A thread-safe FIFO queue for producer-consumer patterns.
+---    - [async.semaphore()]: Limits concurrent access to shared resources.
+---
+--- 7. Error Handling:
+---    - Errors in async tasks are propagated and can be raised or handled explicitly.
+---    - Provides methods like [async.Task:traceback()] for debugging.
+---
+--- Examples:
+--- ```lua
+---   -- Create an async version of vim.system
+---   local system = vim.async.wrap(3, function(cmd, opts, cb)
+---     local obj = vim.system(cmd, opts, cb)
+---     obj.close = function(_, callback)
+---       if not obj:is_closing() then
+---         obj:wait(0)
+---         callback()
+---       end
+---     end
+---     return obj
+---   end)
+---
+---   local sleep = vim.async.wrap(2, function(duration, callback)
+---     local timer = assert(vim.uv.new_timer())
+---     timer:start(duration, 0, callback)
+---     return timer -- timer has a close method
+---   end
+---
+---   -- Create an async-context using run
+---   vim.async.run(function())
+---     local obj_ls = system({'ls'})
+---     sleep(200)
+---     local obj_cat = system({'cat file'})
+---   end)
+--- ```
+---
+--- ### async-function
+---
+--- Async functions are functions that must run in an [async-context] because
+--- they contain at least one call that interacts with the event loop.
+---
+--- These functions can be executed directly using `async.run()` or wrapped
+--- into Task functions via `async.async()`. Both methods ensure the async
+--- function runs within an [async-context].
+---
+--- Use the `@async` annotation to designate a function as an async function.
+---
+--- ### async-context
+---
+--- An async-context is an executation context managed by `vim.async` and is
+--- implemented via [lua-coroutine]s. Many of the functions and methods in
+--- `vim.async` can only run when within this context.
+---
+--- ### async-error-handling
+---
+--- Errors are handled differently depending on whether a function is called in
+--- a blocking or non-blocking manner.
+---
+--- If a function is waited in a blocking call (via [async.await()] or [async.Task:wait()]),
+--- errors are raised immediately.
+---
+--- If a function is waited in a non-blocking way (via [async.Task:await()]),
+--- errors are passed as part of the result in the form of `(err?, ...)`, where
+--- `err` is the error message and `...` are the results of the function when
+--- there is no error.
+---
+--- To run a Task without waiting for the result while still raising
+--- any errors, use [async.Task:raise_on_error()].
+---
+--- @class async
+local M = {}
+
 --- @param ... any
 --- @return {[integer]: any, n: integer}
 local function pack_len(...)
@@ -9,21 +120,34 @@ end
 --- like unpack() but use the length set by F.pack_len if present
 --- @param t? { [integer]: any, n?: integer }
 --- @param first? integer
---- @return ...any
+--- @return any...
 local function unpack_len(t, first)
   if t then
     return unpack(t, first or 1, t.n or table.maxn(t))
   end
 end
 
---- @class async
-local M = {}
+--- Create a function that runs a function when it is garbage collected.
+--- @generic F : function
+--- @param f F
+--- @param gc fun()
+--- @return F
+local function gc_fun(f, gc)
+  local proxy = newproxy(true)
+  local proxy_mt = getmetatable(proxy)
+  proxy_mt.__gc = gc
+  proxy_mt.__call = function(_, ...)
+    return f(...)
+  end
+
+  return proxy
+end
 
 --- Weak table to keep track of running tasks
---- @type table<thread,async.Task?>
+--- @type table<thread,async.Task<any>?>
 local threads = setmetatable({}, { __mode = 'k' })
 
---- @return async.Task?
+--- @return async.Task<any>?
 local function running()
   local task = threads[coroutine.running()]
   if task and not (task:_completed() or task._closing) then
@@ -37,27 +161,33 @@ end
 --- @field close fun(self: async.Handle, callback?: fun())
 --- @field is_closing? fun(self: async.Handle): boolean
 
---- @alias async.CallbackFn fun(...: any): async.Handle?
+--- @alias async.CallbackFn<R> fun(...:R...): async.Handle?
 
---- @class async.Task : async.Handle
---- @field package _callbacks table<integer,fun(err?: any, ...: any)>
---- @field package _callback_pos integer
---- @field private _thread thread
+--- Tasks are used to run coroutines in event loops. If a coroutine needs to
+--- wait on the event loop, the Task suspends the execution of the coroutine and
+--- waits for event loop to restart it.
 ---
---- Tasks can call other async functions (task of callback functions)
+--- Use the high-level [async.run()] or [async.async()] functions to create Task
+--- or Task functions respectively.
+---
+--- To cancel a running Task use the `close()` method. Calling it will cause the
+--- Task to throw a "Task is closing or closed" error into the wrapped coroutine.
+---
+--- Note a Task can be waited on via more than one waiter.
+---
+--- -- If a
+--- -- coroutine is awaiting on a Future object during cancellation, the Future
+--- -- object will be cancelled.
+--- @class async.Task<R> : async.Handle
+--- @field private _thread thread
+--- @field package _future async.Future<R>
+--- @field package _closing boolean
+---
+--- Tasks can await other async functions (task of callback functions)
 --- when we are waiting on a child, we store the handle to it here so we can
 --- cancel it.
 --- @field private _current_child? async.Handle
----
---- Error result of the task is an error occurs.
---- Must use `await` to get the result.
---- @field private _err? any
----
---- Result of the task.
---- Must use `await` to get the result.
---- @field private _result? any[]
 local Task = {}
-Task.__index = Task
 
 --- @private
 --- @param func function
@@ -68,31 +198,35 @@ function Task._new(func)
   local self = setmetatable({
     _closing = false,
     _thread = thread,
-    _callbacks = {},
-    _callback_pos = 1,
-  }, Task)
+    _future = M.future(),
+  }, { __index = Task })
 
+  ---@diagnostic disable-next-line: assign-type-mismatch
   threads[thread] = self
 
   return self
 end
 
+--- Add a callback to be run when the Task has completed.
+---
+--- The callback is called with the arguments:
+--- - (`err: string`) - if the Task completed with an error.
+--- - (`nil`, `...:any`) - the results of the Task if it completed successfully.
+---
+--- If the Task is already done when this method is called, the callback is
+--- called immediately with the results.
 --- @param callback fun(err?: any, ...: any)
 function Task:await(callback)
   if self._closing then
-    callback('closing')
-  elseif self:_completed() then -- TODO(lewis6991): test
-    -- Already finished or closed
-    callback(self._err, unpack_len(self._result))
+    callback('Task is closing or closed')
   else
-    self._callbacks[self._callback_pos] = callback
-    self._callback_pos = self._callback_pos + 1
+    self._future:await(callback)
   end
 end
 
 --- @package
 function Task:_completed()
-  return (self._err or self._result) ~= nil
+  return self._future:completed()
 end
 
 -- Use max 32-bit signed int value to avoid overflow on 32-bit systems.
@@ -126,16 +260,14 @@ function Task:pwait(timeout)
     -- Note we use self:_completed() instead of self:await() to avoid creating a
     -- callback. This avoids having to cleanup/unregister any callback in the
     -- case of a timeout.
-    return self:_completed()
+    return self._future:completed()
   end)
 
   if not done then
     return false, 'timeout'
-  elseif self._err then
-    return false, self._err
-  else
-    return true, unpack_len(self._result)
   end
+
+  return self._future:result()
 end
 
 --- Synchronously wait for a task to finish (blocking)
@@ -192,12 +324,13 @@ end
 --- Will also get the traceback of nested tasks.
 ---
 --- @param msg? string
---- @return string
+--- @return string traceback
 function Task:traceback(msg)
   return self:_traceback(msg)
 end
 
 --- If a task completes with an error, raise the error
+--- @return async.Task self
 function Task:raise_on_error()
   self:await(function(err)
     if err then
@@ -212,22 +345,8 @@ end
 --- @param result? {[integer]: any, n: integer}
 function Task:_finish(err, result)
   self._current_child = nil
-  self._err = err
-  self._result = result
   threads[self._thread] = nil
-
-  local errs = {} --- @type string[]
-  for _, cb in pairs(self._callbacks) do
-    --- @type boolean, string
-    local ok, cb_err = pcall(cb, err, unpack_len(result))
-    if not ok then
-      errs[#errs + 1] = cb_err
-    end
-  end
-
-  if #errs > 0 then
-    error(table.concat(errs, '\n'), 0)
-  end
+  self._future:complete(err, unpack_len(result))
 end
 
 --- @return boolean
@@ -287,7 +406,8 @@ end
 
 --- @param ... any
 function Task:_resume(...)
-  --- @type [boolean, string|async.CallbackFn]
+  --- @diagnostic disable-next-line: assign-type-mismatch
+  --- @type [boolean, string|async.CallbackFn<R>]
   local ret = pack_len(coroutine.resume(self._thread, ...))
   local stat = ret[1]
 
@@ -331,6 +451,7 @@ function Task:_log(...)
   print(self._thread, ...)
 end
 
+--- Returns the status of tasks thread. See [coroutine.status()].
 --- @return 'running'|'suspended'|'normal'|'dead'?
 function Task:status()
   return coroutine.status(self._thread)
@@ -338,60 +459,74 @@ end
 
 --- Run a function in an async context, asynchronously.
 ---
+--- Returns an [async.Task] object which can be used to wait or await the result
+--- of the function.
+---
 --- Examples:
 --- ```lua
---- -- The two below blocks are equivalent:
----
 --- -- Run a uv function and wait for it
---- local stat = async.arun(function()
+--- local stat = async.run(function()
 ---     return async.await(2, vim.uv.fs_stat, 'foo.txt')
 --- end):wait()
 ---
---- -- Since uv functions have sync versions. You can just do:
+--- -- Since uv functions have sync versions, this is the same as:
 --- local stat = vim.fs_stat('foo.txt')
 --- ```
---- @param func function
---- @param ... any
+--- @generic T
+--- @param func async fun(...:T...) Function to run in an async context
+--- @param ... T... Arguments to pass to the function
 --- @return async.Task
-function M.arun(func, ...)
+function M.run(func, ...)
   local task = Task._new(func)
   task:_resume(...)
   return task
 end
 
+--- Represents a callable object that wraps an async function.
+--- The object can be called to create and run an [async.Task].
+---
+--- Example:
+--- ```lua
+--- local task_fun = async.async(function(arg)
+---   return 2, 'b', arg
+--- end)
+---
+--- local task = task_fun('example')
+---
+--- -- Asynchronously wait for the task to finish
+--- async.run(function()
+---   local n, s, arg = async.await(task)
+---   print(n, s, arg) -- Output: 2, 'b', 'example'
+--- end)
+---
+--- -- Synchronously wait for the task to finish
+--- local n, s, arg = task:wait()
+--- print(n, s, arg) -- Output: 2, 'b', 'example'
+--- ```
 --- @class async.TaskFun
 --- @field package _fun fun(...: any): any
---- @operator call(...): any
+--- @operator call: any
 local TaskFun = {}
 TaskFun.__index = TaskFun
 
 function TaskFun:__call(...)
-  return M.arun(self._fun, ...)
+  return M.run(self._fun, ...)
 end
 
---- Create an async function
+--- Convert an async function into a Task function.
+---
+--- Returns an [async.TaskFun] object which can be used to create an
+--- [async.Task] for a given function.
 --- @param fun function
 --- @return async.TaskFun
 function M.async(fun)
   return setmetatable({ _fun = fun }, TaskFun)
 end
 
---- Returns the status of a task’s thread.
----
---- @param task? async.Task
---- @return 'running'|'suspended'|'normal'|'dead'?
-function M.status(task)
-  task = task or running()
-  if task then
-    assert(getmetatable(task) == Task, 'Expected Task')
-    return task:status()
-  end
-end
-
 --- @async
---- @generic R1, R2, R3, R4
---- @param fun fun(callback: fun(r1: R1, r2: R2, r3: R3, r4: R4)): any?
---- @return R1, R2, R3, R4
+--- @generic R
+--- @param fun async.CallbackFn<R>
+--- @return R...
 local function yield(fun)
   assert(type(fun) == 'function', 'Expected function')
   return coroutine.yield(fun)
@@ -402,7 +537,6 @@ end
 --- @return any ...
 local function await_task(task)
   --- @param callback fun(err?: string, ...: any)
-  --- @return function
   local res = pack_len(yield(function(callback)
     task:await(callback)
     return task
@@ -419,8 +553,10 @@ local function await_task(task)
 end
 
 --- Asynchronous blocking wait
+--- @async
+--- @generic T, R
 --- @param argc integer
---- @param fun async.CallbackFn
+--- @param fun fun(...: T, callback: fun(...: R))
 --- @param ... any func arguments
 --- @return any ...
 local function await_cbfun(argc, fun, ...)
@@ -446,7 +582,7 @@ end
 ---
 --- Example:
 --- ```lua
---- local task = async.arun(function()
+--- local task = async.run(function()
 ---    return 1, 'a'
 --- end)
 ---
@@ -454,7 +590,7 @@ end
 ---    return 2, 'b', arg
 --- end)
 ---
---- async.arun(function()
+--- async.run(function()
 ---   do -- await a callback function
 ---     async.await(1, vim.schedule)
 ---   end
@@ -480,9 +616,11 @@ end
 --- end)
 --- ```
 --- @async
---- @overload fun(argc: integer, func: async.CallbackFn, ...:any): any ...
---- @overload fun(task: async.Task): any ...
---- @overload fun(taskfun: async.TaskFun): any ...
+--- @generic T, R
+--- @param ... any see overloads
+--- @overload fun(argc: integer, func: fun(...:T, callback: fun(...:R)), ...:T): async.Handle?
+--- @overload fun(task: async.Task<R>): R ...
+--- @overload fun(taskfun: async.TaskFun<R>): R ...
 function M.await(...)
   assert(running(), 'Not in async context')
 
@@ -501,12 +639,16 @@ end
 
 --- Creates an async function with a callback style function.
 ---
+--- `func` can optionally return an object with a close method to clean up
+--- resources. Note this method will be called when the task finishes or
+--- interrupted.
+---
 --- Example:
 ---
 --- ```lua
 --- --- Note the callback argument is not present in the return function
---- --- @type fun(timeout: integer)
---- local sleep = async.awrap(2, function(timeout, callback)
+--- --- @type async fun(timeout: integer)
+--- local sleep = async.wrap(2, function(timeout, callback)
 ---   local timer = vim.uv.new_timer()
 ---   timer:start(timeout * 1000, 0, callback)
 ---   -- uv_timer_t provides a close method so timer will be
@@ -514,18 +656,18 @@ end
 ---   return timer
 --- end)
 ---
---- async.arun(function()
+--- async.run(function()
 ---   print('hello')
 ---   sleep(2)
 ---   print('world')
 --- end)
 --- ```
 ---
---- local atimer = async.awrap(
+--- @generic T, R
 --- @param argc integer
---- @param func async.CallbackFn
---- @return async function
-function M.awrap(argc, func)
+--- @param func fun(...: T, callback: fun(...: R))
+--- @return async fun(...:T): R
+function M.wrap(argc, func)
   assert(type(argc) == 'number')
   assert(type(func) == 'function')
   --- @async
@@ -535,6 +677,7 @@ function M.awrap(argc, func)
 end
 
 -- TODO(lewis6991): this needs more iteration/work
+
 --- Use this to create a function which executes in an async context but
 --- called from a non-async context.
 ---
@@ -557,7 +700,7 @@ function M._create(argc, func)
 
     task:raise_on_error()
 
-    --- @type fun(err:string?, ...:any)
+    --- @type fun(err:string?, ...:any)?
     local callback = argc and select(argc + 1, ...) or nil
     if callback and type(callback) == 'function' then
       task:await(callback)
@@ -569,57 +712,38 @@ function M._create(argc, func)
   end
 end
 
+--- @diagnostic disable-next-line: unnecessary-if
 if vim.schedule then
   --- An async function that when called will yield to the Neovim scheduler to be
   --- able to call the API.
-  M.schedule = M.awrap(1, vim.schedule)
+  M.schedule = M.wrap(1, vim.schedule)
 end
 
---- Create a function that runs a function when it is garbage collected.
---- @generic F
---- @param f F
---- @param gc fun()
---- @return F
-local function gc_fun(f, gc)
-  local proxy = newproxy(true)
-  local proxy_mt = getmetatable(proxy)
-  proxy_mt.__gc = gc
-  proxy_mt.__call = function(_, ...)
-    return f(...)
-  end
-
-  return proxy
-end
-
---- @param task_cbs table<async.Task,function>
-local function gc_cbs(task_cbs)
-  for task, tcb in pairs(task_cbs) do
-    for j, cb in pairs(task._callbacks) do
-      if cb == tcb then
-        task._callbacks[j] = nil
-        break
-      end
-    end
-  end
-end
-
---- @async
+--- Waits for multiple tasks to finish and iterates over their results.
+---
+--- This function allows you to run multiple asynchronous tasks concurrently and
+--- process their results as they complete. It returns an iterator function that
+--- yields the index of the task, any error encountered, and the results of the task.
+---
+--- If a task completes with an error, the error is returned as the second value.
+--- Otherwise, the results of the task are returned as subsequent values.
+---
 --- Example:
 --- ```lua
---- local task1 = async.arun(function()
+--- local task1 = async.run(function()
 ---   return 1, 'a'
 --- end)
 ---
---- local task2 = async.arun(function()
----   return 1, 'a'
+--- local task2 = async.run(function()
+---   return 2, 'b'
 --- end)
 ---
---- local task3 = async.arun(function()
+--- local task3 = async.run(function()
 ---   error('task3 error')
 --- end)
 ---
---- async.arun(function()
----   for i, err, r1, r2 in async.iter({task1, task2, task3})
+--- async.run(function()
+---   for i, err, r1, r2 in async.iter({task1, task2, task3}) do
 ---     print(i, err, r1, r2)
 ---   end
 --- end)
@@ -632,19 +756,23 @@ end
 --- 3 'task3 error' nil nil
 --- ```
 ---
---- @param tasks async.Task[]
---- @return fun(): (integer?, any?, ...)
+--- @async
+--- @param tasks async.Task[] A list of tasks to wait for and iterate over.
+--- @return async fun(): (integer?, any?, ...any) iterator that yields the index, error, and results of each task.
 function M.iter(tasks)
   assert(running(), 'Not in async context')
 
-  local results = {} --- @type [integer, any, ...][]
+  local results = {} --- @type [integer, any, ...any][]
 
   -- Iter blocks in an async context so only one waiter is needed
-  local waiter = nil
+  local waiter = nil --- @type fun(index: integer?, err?: any, ...: any)?
 
   local remaining = #tasks
 
-  local task_cbs = {} --- @type table<async.Task,function>
+  -- Keep track of the callbacks so we can remove them when the iterator
+  -- is garbage collected.
+  --- @type table<async.Future<any>,function>
+  local futs = setmetatable({}, { __mode = 'v' })
 
   --- If can_gc_cbs is true, then the iterator function has been garbage
   --- collected and means any awaiters can also be garbage collected. The
@@ -656,7 +784,9 @@ function M.iter(tasks)
   for i, task in ipairs(tasks) do
     local function cb(err, ...)
       if can_gc_cbs == true then
-        gc_cbs(task_cbs)
+        for fut, tcb in pairs(futs) do
+          fut:_remove_cb(tcb)
+        end
       end
 
       local callback = waiter
@@ -674,12 +804,12 @@ function M.iter(tasks)
       end
     end
 
-    task_cbs[task] = cb
+    futs[task._future] = cb
     task:await(cb)
   end
 
   return gc_fun(
-    M.awrap(1, function(callback)
+    M.wrap(1, function(callback)
       if next(results) then
         local res = table.remove(results, 1)
         callback(unpack_len(res))
@@ -699,7 +829,7 @@ end
 
 do -- join()
   --- @param results table<integer,table>
-  --- @param i integer
+  --- @param i? integer
   --- @param ... any
   --- @return boolean
   local function collect(results, i, ...)
@@ -718,24 +848,23 @@ do -- join()
     return results
   end
 
-  --- @async
   --- Wait for all tasks to finish and return their results.
   ---
   --- Example:
   --- ```lua
-  --- local task1 = async.arun(function()
+  --- local task1 = async.run(function()
   ---   return 1, 'a'
   --- end)
   ---
-  --- local task2 = async.arun(function()
+  --- local task2 = async.run(function()
   ---   return 1, 'a'
   --- end)
   ---
-  --- local task3 = async.arun(function()
+  --- local task3 = async.run(function()
   ---   error('task3 error')
   --- end)
   ---
-  --- async.arun(function()
+  --- async.run(function()
   ---   local results = async.join({task1, task2, task3})
   ---   print(vim.inspect(results))
   --- end)
@@ -749,18 +878,403 @@ do -- join()
   ---   [3] = { 'task2 error' },
   --- }
   --- ```
+  --- @async
   --- @param tasks async.Task[]
   --- @return table<integer,[any?,...?]>
   function M.join(tasks)
     assert(running(), 'Not in async context')
     return drain_iter(M.iter(tasks))
   end
+end
 
+--- @async
+--- @param tasks async.Task[]
+--- @return integer? index
+--- @return any? err
+--- @return any ... results
+function M.joinany(tasks)
+  return M.iter(tasks)()
+end
+
+do --- future()
+  --- Future objects are used to bridge low-level callback-based code with
+  --- high-level async/await code.
+  --- @class async.Future<R>
+  --- @field private _callbacks table<integer,fun(err?: any, ...: R...)>
+  --- @field private _callback_pos integer
+  --- Error result of the task is an error occurs.
+  --- Must use `await` to get the result.
+  --- @field private _err? any
+  ---
+  --- Result of the task.
+  --- Must use `await` to get the result.
+  --- @field private _result? R[]
+  local Future = {}
+
+  --- Return `true` if the Future is completed.
+  --- @return boolean
+  function Future:completed()
+    return (self._err or self._result) ~= nil
+  end
+
+  --- Return the result of the Future.
+  ---
+  --- If the Future is done and has a result set by the `complete()` method, the
+  --- result is returned.
+  ---
+  --- If the Future’s result isn’t yet available, this method raises a
+  --- "Future has not completed" error.
+  --- @return boolean stat
+  --- @return any ... error or result
+  function Future:result()
+    if not self:completed() then
+      error('Future has not completed', 2)
+    end
+    if self._err then
+      return false, self._err
+    else
+      return true, unpack_len(self._result)
+    end
+  end
+
+  --- Add a callback to be run when the Future is done.
+  ---
+  --- The callback is called with the arguments:
+  --- - (`err: string`) - if the Future completed with an error.
+  --- - (`nil`, `...:any`) - the results of the Future if it completed successfully.
+  ---
+  --- If the Future is already done when this method is called, the callback is
+  --- called immediately with the results.
+  --- @param callback fun(err?: any, ...: any)
+  function Future:await(callback)
+    if self:completed() then -- TODO(lewis6991): test
+      -- Already finished or closed
+      callback(self._err, unpack_len(self._result))
+    else
+      self._callbacks[self._callback_pos] = callback
+      self._callback_pos = self._callback_pos + 1
+    end
+  end
+
+  -- Mark the Future as complete and set its err or result.
+  --- @param err? string
+  --- @param ... any result
+  function Future:complete(err, ...)
+    if err ~= nil then
+      self._err = err
+    else
+      self._result = pack_len(...)
+    end
+
+    local errs = {} --- @type string[]
+    -- Need to use pairs to avoid gaps caused by removed callbacks
+    for _, cb in pairs(self._callbacks) do
+      local ok, cb_err = pcall(cb, err, ...)
+      if not ok then
+        errs[#errs + 1] = cb_err
+      end
+    end
+
+    if #errs > 0 then
+      error(table.concat(errs, '\n'), 0)
+    end
+  end
+
+  --- @param cb fun(err?: any, ...: any)
+  function Future:_remove_cb(cb)
+    for j, fcb in pairs(self._callbacks) do
+      if fcb == cb then
+        self._callbacks[j] = nil
+        break
+      end
+    end
+  end
+
+  --- Create a new future
+  --- @return async.Future
+  function M.future()
+    return setmetatable({
+      _callbacks = {},
+      _callback_pos = 1,
+    }, { __index = Future })
+  end
+end
+
+do --- event()
+  --- An event can be used to notify multiple tasks that some event has
+  --- happened. An Event object manages an internal flag that can be set to true
+  --- with the `set()` method and reset to `false` with the `clear()` method.
+  --- The `wait()` method blocks until the flag is set to `true`. The flag is
+  --- set to `false` initially.
+  --- @class async.Event
+  --- @field private _is_set boolean
+  --- @field private _waiters function[]
+  local Event = {}
+
+  --- Set the event.
+  ---
+  --- All tasks waiting for event to be set will be immediately awakened.
+  --- @param max_woken? integer
+  function Event:set(max_woken)
+    if self._is_set then
+      return
+    end
+    self._is_set = true
+    local waiters = self._waiters
+    local waiters_to_notify = {} --- @type function[]
+    max_woken = max_woken or #waiters
+    while #waiters > 0 and #waiters_to_notify < max_woken do
+      waiters_to_notify[#waiters_to_notify + 1] = table.remove(waiters)
+    end
+    if #waiters > 0 then
+      self._is_set = false
+    end
+    for _, waiter in ipairs(waiters_to_notify) do
+      waiter()
+    end
+  end
+
+  --- Wait until the event is set.
+  ---
+  --- If the event is set, return `true` immediately. Otherwise block until
+  --- another task calls set().
+  function Event:wait()
+    M.await(1, function(callback)
+      if self._is_set then
+        callback()
+      else
+        table.insert(self._waiters, callback)
+      end
+    end)
+  end
+
+  --- Clear (unset) the event.
+  ---
+  --- Tasks awaiting on wait() will now block until the set() method is called
+  --- again.
+  function Event:clear()
+    self._is_set = false
+  end
+
+  --- Create a new event
+  ---
+  --- An event can signal to multiple listeners to resume execution
+  --- The event can be set from a non-async context.
+  ---
+  --- ```lua
+  ---  local event = async.event()
+  ---
+  ---  local worker = async.run(function()
+  ---    sleep(1000)
+  ---    event.set()
+  ---  end)
+  ---
+  ---  local listeners = {
+  ---    async.run(function()
+  ---      event.wait()
+  ---      print("First listener notified")
+  ---    end),
+  ---    async.run(function()
+  ---      event.wait()
+  ---      print("Second listener notified")
+  ---    end),
+  ---  }
+  --- ```
+  --- @return async.Event
+  function M.event()
+    return setmetatable({
+      _waiters = {},
+      _is_set = false,
+    }, { __index = Event })
+  end
+end
+
+do --- queue()
+  --- @class async.Queue
+  --- @field private _non_empty async.Event
+  --- @field package _non_full async.Event
+  --- @field private _max_size? integer
+  --- @field private _items integer[]
+  --- @field private _right_i integer
+  --- @field private _left_i integer
+  local Queue = {}
+
+  --- Returns the number of items in the queue
+  function Queue:size()
+    return self._right_i - self._left_i
+  end
+
+  --- Returns the maximum number of items in the queue
+  function Queue:max_size()
+    return self._max_size
+  end
+
+  --- Put a value into the queue
   --- @async
-  --- @param tasks async.Task[]
-  --- @return integer?, any?, ...?
-  function M.joinany(tasks)
-    return M.iter(tasks)()
+  --- @param value any
+  function Queue:put(value)
+    self._non_full:wait()
+    self:put_nowait(value)
+  end
+
+  --- Get a value from the queue, blocking if the queue is empty
+  --- @async
+  function Queue:get()
+    self._non_empty:wait()
+    return self:get_nowait()
+  end
+
+  --- Get a value from the queue, erroring if queue is empty.
+  --- If the queue is empty, raise "Queue is empty" error.
+  function Queue:get_nowait()
+    if self:size() == 0 then
+      error('Queue is empty', 2)
+    end
+    self._left_i = self._left_i + 1
+    local item = self._items[self._left_i]
+    self._items[self._left_i] = nil
+    if self._left_i == self._right_i then
+      self._non_empty:clear()
+    end
+    self._non_full:set(1)
+    return item
+  end
+
+  --- Put an item into the queue without blocking.
+  --- If no free slot is immediately available, raise "Queue is full" error.
+  --- @param value any
+  function Queue:put_nowait(value)
+    if self:size() == self:max_size() then
+      error('Queue is full', 2)
+    end
+    self._right_i = self._right_i + 1
+    self._items[self._right_i] = value
+    self._non_empty:set(1)
+    if self:size() == self.max_size then
+      self._non_full:clear()
+    end
+  end
+
+  --- Create a new FIFO queue with async support.
+  --- ```lua
+  ---  local queue = async.queue()
+  ---
+  ---  local producer = async.run(function()
+  ---    for i = 1, 10 do
+  ---      sleep(100)
+  ---      queue:put(i)
+  ---    end
+  ---    queue:put(nil)
+  ---  end)
+  ---
+  ---  while true do
+  ---    local value = queue:get()
+  ---    if value == nil then
+  ---      break
+  ---    end
+  ---    print(value)
+  ---  end
+  ---  print("Done")
+  --- ```
+  ---@param max_size? integer The maximum number of items in the queue, defaults to no limit
+  ---@return async.Queue
+  function M.queue(max_size)
+    local self = setmetatable({
+      _items = {},
+      _left_i = 0,
+      _right_i = 0,
+      _max_size = max_size,
+      _non_empty = M.event(),
+      _non_full = M.event(),
+    }, { __index = Queue })
+
+    self._non_full:set()
+
+    return self
+  end
+end
+
+do --- semaphore()
+  --- A semaphore manages an internal counter which is decremented by each
+  --- `acquire()` call and incremented by each `release()` call. The counter can
+  --- never go below zero; when `acquire()` finds that it is zero, it blocks,
+  --- waiting until some task calls `release()`.
+  ---
+  --- The preferred way to use a Semaphore is with the `with()` method, which
+  --- automatically acquires and releases the semaphore around a function call.
+  --- @class async.Semaphore
+  --- @field private _permits integer
+  --- @field private _queue table<integer, thread>
+  --- @field package _event async.Event
+  local Semaphore = {}
+
+  --- Executes the given function within the semaphore's context, ensuring
+  --- that the semaphore's constraints are respected.
+  --- @async
+  --- @generic R
+  --- @param fn fun(): R... # Function to execute within the semaphore's context.
+  --- @return R... # Result(s) of the executed function.
+  function Semaphore:with(fn)
+    self:acquire()
+    local r = pack_len(pcall(fn))
+    self:release()
+    local stat = r[1]
+    if not stat then
+      local err = r[2]
+      error(err)
+    end
+    return unpack_len(r, 2)
+  end
+
+  --- Acquire a semaphore.
+  ---
+  --- If the internal counter is greater than zero, decrement it by `1` and
+  --- return immediately. If it is `0`, wait until a `release()` is called.
+  function Semaphore:acquire()
+    self._event:wait()
+    self._permits = self._permits - 1
+    assert(self._permits >= 0, 'Semaphore value is negative')
+    if self._permits == 0 then
+      self._event:clear()
+    end
+  end
+
+  --- Release a semaphore.
+  ---
+  --- Increments the internal counter by `1`. Can wake
+  --- up a task waiting to acquire the semaphore.
+  function Semaphore:release()
+    self._permits = self._permits + 1
+    self._event:set(1)
+  end
+
+  --- Create an async semaphore that allows up to a given number of acquisitions.
+  ---
+  --- ```lua
+  ---  local semaphore = async.semaphore(2)
+  ---
+  ---  local value = 0
+  ---  for _ = 1, 10 do
+  ---    async.run(function()
+  ---      semaphore:with(function()
+  ---        value = value + 1
+  ---        sleep(10)
+  ---        print(value) -- Never more than 2
+  ---        value = value - 1
+  ---      end)
+  ---    end)
+  ---  end
+  --- ```
+  --- @param permits integer
+  --- @return async.Semaphore
+  function M.semaphore(permits)
+    local obj = setmetatable({
+      _permits = permits or 1,
+      _queue = {},
+      _event = M.event(),
+    }, { __index = Semaphore })
+    obj._event:set()
+    return obj
   end
 end
 
