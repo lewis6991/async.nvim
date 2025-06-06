@@ -473,10 +473,10 @@ end
 --- -- Since uv functions have sync versions, this is the same as:
 --- local stat = vim.fs_stat('foo.txt')
 --- ```
---- @generic T
---- @param func async fun(...:T...) Function to run in an async context
+--- @generic T, R
+--- @param func async fun(...:T...): R... Function to run in an async context
 --- @param ... T... Arguments to pass to the function
---- @return async.Task
+--- @return async.Task<R>
 function M.run(func, ...)
   local task = Task._new(func)
   task:_resume(...)
@@ -504,12 +504,13 @@ end
 --- local n, s, arg = task:wait()
 --- print(n, s, arg) -- Output: 2, 'b', 'example'
 --- ```
---- @class async.TaskFun
---- @field package _fun fun(...: any): any
---- @operator call: any
+--- @class async.TaskFun<T, R>
+--- @field package _fun fun(...: T...): R...
+--- @operator call: async.Task<R>
 local TaskFun = {}
 TaskFun.__index = TaskFun
 
+--- @param ... T...
 function TaskFun:__call(...)
   return M.run(self._fun, ...)
 end
@@ -518,8 +519,9 @@ end
 ---
 --- Returns an [async.TaskFun] object which can be used to create an
 --- [async.Task] for a given function.
---- @param fun function
---- @return async.TaskFun
+--- @generic T, R
+--- @param fun async fun(...:T...): R...
+--- @return async.TaskFun<T, R>
 function M.async(fun)
   return setmetatable({ _fun = fun }, TaskFun)
 end
@@ -619,9 +621,9 @@ end
 --- @async
 --- @generic T, R
 --- @param ... any see overloads
---- @overload fun(argc: integer, func: fun(...:T, callback: fun(...:R)), ...:T): async.Handle?
---- @overload fun(task: async.Task<R>): R ...
---- @overload fun(taskfun: async.TaskFun<R>): R ...
+--- @overload fun(argc: integer, func: (fun(...:T..., callback: fun(...:R...)): async.Handle?), ...:T...): R...
+--- @overload fun(task: async.Task<R>): R...
+--- @overload fun(taskfun: async.TaskFun<R>): R...
 function M.await(...)
   assert(running(), 'Not in async context')
 
@@ -758,7 +760,7 @@ end
 --- ```
 ---
 --- @async
---- @param tasks async.Task[] A list of tasks to wait for and iterate over.
+--- @param tasks async.Task<any>[] A list of tasks to wait for and iterate over.
 --- @return async fun(): (integer?, any?, ...any) iterator that yields the index, error, and results of each task.
 function M.iter(tasks)
   assert(running(), 'Not in async context')
@@ -880,7 +882,7 @@ do -- join()
   --- }
   --- ```
   --- @async
-  --- @param tasks async.Task[]
+  --- @param tasks async.Task<any>[]
   --- @return table<integer,[any?,...?]>
   function M.join(tasks)
     assert(running(), 'Not in async context')
@@ -889,7 +891,7 @@ do -- join()
 end
 
 --- @async
---- @param tasks async.Task[]
+--- @param tasks async.Task<any>[]
 --- @return integer? index
 --- @return any? err
 --- @return any ... results
@@ -1027,7 +1029,7 @@ do --- event()
     local waiters_to_notify = {} --- @type function[]
     max_woken = max_woken or #waiters
     while #waiters > 0 and #waiters_to_notify < max_woken do
-      waiters_to_notify[#waiters_to_notify + 1] = table.remove(waiters)
+      waiters_to_notify[#waiters_to_notify + 1] = table.remove(waiters, 1)
     end
     if #waiters > 0 then
       self._is_set = false
@@ -1217,7 +1219,7 @@ do --- semaphore()
   --- that the semaphore's constraints are respected.
   --- @async
   --- @generic R
-  --- @param fn fun(): R... # Function to execute within the semaphore's context.
+  --- @param fn async fun(): R... # Function to execute within the semaphore's context.
   --- @return R... # Result(s) of the executed function.
   function Semaphore:with(fn)
     self:acquire()

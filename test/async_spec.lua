@@ -1,6 +1,11 @@
 local helpers = require('nvim-test.helpers')
 local exec_lua = helpers.exec_lua
 
+-- TODO: test error message has correct stack trace when:
+-- task finishes with no continuation
+-- task finishes with synchronous wait
+-- nil in results
+
 --- @param s string
 --- @param f fun()
 local function it_exec(s, f)
@@ -21,6 +26,13 @@ describe('async', function()
       _G.async = Async.async
       _G.wrap = Async.wrap
       _G.schedule = Async.schedule
+
+      function _G.eq(expected, actual)
+        assert(
+          vim.deep_equal(expected, actual),
+          ('%s does not equal %s'):format(vim.inspect(actual), vim.inspect(expected))
+        )
+      end
     end)
   end)
 
@@ -29,18 +41,20 @@ describe('async', function()
 
     local done = false
 
-    local function spawn(...)
-      local obj = vim.uv.spawn(...)
+    --- @param path string
+    --- @param options uv.spawn.options
+    --- @param on_exit fun(code: integer, signal: integer)
+    --- @return uv.uv_process_t handle
+    local function spawn(path, options, on_exit)
+      local obj = vim.uv.spawn(path, options, on_exit)
       table.insert(weak, obj)
       return obj
     end
 
     run(function()
-      --- @type integer
       local code1 = await(3, spawn, 'echo', { args = { 'foo' } })
       assert(code1 == 0)
 
-      --- @type integer
       local code2 = await(3, spawn, 'echo', { args = { 'bar' } })
       assert(code2 == 0)
 
@@ -242,10 +256,7 @@ describe('async', function()
       end
     end):wait(1000)
 
-    assert(
-      vim.deep_equal(expected, results),
-      ('%s does not equal %s'):format(vim.inspect(results), vim.inspect(expected))
-    )
+    eq(expected, results)
   end)
 
   it_exec('can await a run task', function()
@@ -289,10 +300,7 @@ describe('async', function()
     local ok, err = task2:pwait(1000)
     assert(not ok and err:match('async_spec.lua:%d+: GOT HERE'), task2:traceback(err))
 
-    assert(
-      vim.deep_equal(expected, results),
-      ('%s does not equal %s'):format(vim.inspect(results), vim.inspect(expected))
-    )
+    eq(expected, results)
   end)
 
   it_exec('can provide a traceback for nested tasks', function()
@@ -340,8 +348,38 @@ stack traceback:
     assert(tb:match(m), 'ERROR: ' .. tb)
   end)
 
-  -- TODO: test error message has correct stack trace when:
-  -- task finishes with no continuation
-  -- task finishes with synchronous wait
-  -- nil in results
+  describe('semaphore', function()
+    it_exec('runs', function()
+      local ret = {}
+      run(function()
+        local semaphore = Async.semaphore(3)
+        local tasks = {} --- @type async.Task<nil>[]
+        for i = 1, 5 do
+          tasks[#tasks + 1] = run(function()
+            semaphore:with(function()
+              ret[#ret + 1] = 'start' .. i
+              schedule()
+              ret[#ret + 1] = 'end' .. i
+            end)
+          end)
+        end
+        Async.join(tasks)
+      end):wait()
+
+      eq({
+        'start1',
+        'start2',
+        'start3',
+        -- Launch 3 tasks, semaphore now full, now wait for one to finish
+        'end1',
+        'start4',
+        'end2',
+        'start5',
+        -- All tasks started, now wait for them to finish
+        'end3',
+        'end4',
+        'end5',
+      }, ret)
+    end)
+  end)
 end)
