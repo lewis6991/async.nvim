@@ -188,6 +188,7 @@ end
 --- cancel it.
 --- @field private _current_child? async.Handle
 local Task = {}
+Task.__index = Task
 
 --- @private
 --- @param func function
@@ -199,7 +200,7 @@ function Task._new(func)
     _closing = false,
     _thread = thread,
     _future = M.future(),
-  }, { __index = Task })
+  }, Task)
 
   ---@diagnostic disable-next-line: assign-type-mismatch
   threads[thread] = self
@@ -634,7 +635,7 @@ function M.await(...)
     return await_taskfun(...)
   end
 
-  error('Invalid arguments, expected Task or (argc, func) got: ' .. type(arg1), 2)
+  error('Invalid arguments, expected Task or (argc, func) got: ' .. vim.inspect(arg1), 2)
 end
 
 --- Creates an async function with a callback style function.
@@ -910,6 +911,7 @@ do --- future()
   --- Must use `await` to get the result.
   --- @field private _result? R[]
   local Future = {}
+  Future.__index = Future
 
   --- Return `true` if the Future is completed.
   --- @return boolean
@@ -996,7 +998,7 @@ do --- future()
     return setmetatable({
       _callbacks = {},
       _callback_pos = 1,
-    }, { __index = Future })
+    }, Future)
   end
 end
 
@@ -1010,6 +1012,7 @@ do --- event()
   --- @field private _is_set boolean
   --- @field private _waiters function[]
   local Event = {}
+  Event.__index = Event
 
   --- Set the event.
   ---
@@ -1085,7 +1088,7 @@ do --- event()
     return setmetatable({
       _waiters = {},
       _is_set = false,
-    }, { __index = Event })
+    }, Event)
   end
 end
 
@@ -1098,6 +1101,7 @@ do --- queue()
   --- @field private _right_i integer
   --- @field private _left_i integer
   local Queue = {}
+  Queue.__index = Queue
 
   --- Returns the number of items in the queue
   function Queue:size()
@@ -1186,7 +1190,7 @@ do --- queue()
       _max_size = max_size,
       _non_empty = M.event(),
       _non_full = M.event(),
-    }, { __index = Queue })
+    }, Queue)
 
     self._non_full:set()
 
@@ -1207,6 +1211,7 @@ do --- semaphore()
   --- @field private _queue table<integer, thread>
   --- @field package _event async.Event
   local Semaphore = {}
+  Semaphore.__index = Semaphore
 
   --- Executes the given function within the semaphore's context, ensuring
   --- that the semaphore's constraints are respected.
@@ -1272,7 +1277,7 @@ do --- semaphore()
       _permits = permits or 1,
       _queue = {},
       _event = M.event(),
-    }, { __index = Semaphore })
+    }, Semaphore)
     obj._event:set()
     return obj
   end
