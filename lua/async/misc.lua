@@ -7,26 +7,26 @@ local M = {}
 --- Like async.join, but with a limit on the number of concurrent tasks.
 --- @async
 --- @param max_jobs integer
---- @param task_funs async.TaskFun[]
-function M.join_n_1(max_jobs, task_funs)
-  if #task_funs == 0 then
+--- @param funs (async fun())[]
+function M.join_n_1(max_jobs, funs)
+  if #funs == 0 then
     return
   end
 
-  max_jobs = math.min(max_jobs, #task_funs)
+  max_jobs = math.min(max_jobs, #funs)
 
-  local running = {} --- @type async.TaskFun[]
+  local running = {} --- @type async.Task<any>[]
 
   -- Start the first batch of tasks
   for i = 1, max_jobs do
-    running[i] = task_funs[i]()
+    running[i] = assert(funs[i])()
   end
 
   -- As tasks finish, add new ones
-  for i = max_jobs + 1, #task_funs do
+  for i = max_jobs + 1, #funs do
     local finished = async.joinany(running)
     --- @cast finished -?
-    running[finished] = task_funs[i]()
+    running[finished] = async.run(assert(funs[i]))
   end
 
   -- Wait for all tasks to finish
@@ -37,16 +37,17 @@ end
 --- (different implementation and doesn't use `async.joinany()`)
 --- @async
 --- @param max_jobs integer
---- @param task_funs async.TaskFun[]
-function M.join_n_2(max_jobs, task_funs)
-  if #task_funs == 0 then
+--- @param funs (async fun())[]
+function M.join_n_2(max_jobs, funs)
+  if #funs == 0 then
     return
   end
 
-  max_jobs = math.min(max_jobs, #task_funs)
+  max_jobs = math.min(max_jobs, #funs)
 
-  local remaining = { select(max_jobs + 1, unpack(task_funs)) }
-  local to_go = #task_funs
+  --- @type (async fun())[]
+  local remaining = { select(max_jobs + 1, unpack(funs)) }
+  local to_go = #funs
 
   async.await(1, function(finish)
     local function cb()
@@ -55,12 +56,12 @@ function M.join_n_2(max_jobs, task_funs)
         finish()
       elseif #remaining > 0 then
         local next_task = table.remove(remaining)
-        next_task():await(cb)
+        async.run(next_task):await(cb)
       end
     end
 
     for i = 1, max_jobs do
-      task_funs[i]():await(cb)
+      async.run(assert(funs[i])):await(cb)
     end
   end)
 end
@@ -68,21 +69,19 @@ end
 --- Like async.join, but with a limit on the number of concurrent tasks.
 --- @async
 --- @param max_jobs integer
---- @param task_funs async.TaskFun[]
-function M.join_n_3(max_jobs, task_funs)
-  if #task_funs == 0 then
+--- @param funs (async fun())[]
+function M.join_n_3(max_jobs, funs)
+  if #funs == 0 then
     return
   end
 
   local semaphore = async.semaphore(max_jobs)
 
-  local tasks = {}
+  local tasks = {} --- @type async.Task<any>[]
 
-  for _, task_fun in ipairs(task_funs) do
+  for _, fun in ipairs(funs) do
     tasks[#tasks + 1] = async.run(function()
-      semaphore:with(function()
-        async.await(task_fun)
-      end)
+      semaphore:with(fun)
     end)
   end
 

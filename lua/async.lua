@@ -161,8 +161,6 @@ end
 --- @field close fun(self: async.Handle, callback?: fun())
 --- @field is_closing? fun(self: async.Handle): boolean
 
---- @alias async.CallbackFn<R> fun(...:R...): async.Handle?
-
 --- Tasks are used to run coroutines in event loops. If a coroutine needs to
 --- wait on the event loop, the Task suspends the execution of the coroutine and
 --- waits for event loop to restart it.
@@ -408,7 +406,7 @@ end
 --- @param ... any
 function Task:_resume(...)
   --- @diagnostic disable-next-line: assign-type-mismatch
-  --- @type [boolean, string|async.CallbackFn<R>]
+  --- @type [boolean, string|fun(...:R...): async.Handle?]
   local ret = pack_len(coroutine.resume(self._thread, ...))
   local stat = ret[1]
 
@@ -528,7 +526,7 @@ end
 
 --- @async
 --- @generic R
---- @param fun async.CallbackFn<R>
+--- @param fun fun(...:R...): async.Handle?
 --- @return R...
 local function yield(fun)
   assert(type(fun) == 'function', 'Expected function')
