@@ -76,11 +76,17 @@ function M.join_n_3(max_jobs, task_funs)
 
   local semaphore = async.semaphore(max_jobs)
 
+  local tasks = {}
+
   for _, task_fun in ipairs(task_funs) do
-    semaphore:with(function()
-      async.await(task_fun)
+    tasks[#tasks + 1] = async.run(function()
+      semaphore:with(function()
+        async.await(task_fun)
+      end)
     end)
   end
+
+  async.join(tasks)
 end
 
 return M
