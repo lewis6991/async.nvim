@@ -7,13 +7,12 @@ async.Event:clear()	lua-async.txt	/*async.Event:clear()*
 async.Event:set()	lua-async.txt	/*async.Event:set()*
 async.Event:wait()	lua-async.txt	/*async.Event:wait()*
 async.Future	lua-async.txt	/*async.Future*
-async.Future:await()	lua-async.txt	/*async.Future:await()*
 async.Future:complete()	lua-async.txt	/*async.Future:complete()*
 async.Future:completed()	lua-async.txt	/*async.Future:completed()*
 async.Future:result()	lua-async.txt	/*async.Future:result()*
+async.Future:wait()	lua-async.txt	/*async.Future:wait()*
 async.Handle	lua-async.txt	/*async.Handle*
 async.Handle.close	lua-async.txt	/*async.Handle.close*
-async.Handle.is_closing	lua-async.txt	/*async.Handle.is_closing*
 async.Queue	lua-async.txt	/*async.Queue*
 async.Queue:get()	lua-async.txt	/*async.Queue:get()*
 async.Queue:get_nowait()	lua-async.txt	/*async.Queue:get_nowait()*
@@ -26,10 +25,7 @@ async.Semaphore:acquire()	lua-async.txt	/*async.Semaphore:acquire()*
 async.Semaphore:release()	lua-async.txt	/*async.Semaphore:release()*
 async.Semaphore:with()	lua-async.txt	/*async.Semaphore:with()*
 async.Task	lua-async.txt	/*async.Task*
-async.Task:await()	lua-async.txt	/*async.Task:await()*
 async.Task:close()	lua-async.txt	/*async.Task:close()*
-async.Task:is_closing()	lua-async.txt	/*async.Task:is_closing()*
-async.Task:pwait()	lua-async.txt	/*async.Task:pwait()*
 async.Task:raise_on_error()	lua-async.txt	/*async.Task:raise_on_error()*
 async.Task:status()	lua-async.txt	/*async.Task:status()*
 async.Task:traceback()	lua-async.txt	/*async.Task:traceback()*

@@ -100,7 +100,7 @@ local pcall = copcall or pcall
 --- If a function is waited in a blocking call (via [async.await()] or [async.Task:wait()]),
 --- errors are raised immediately.
 ---
---- If a function is waited in a non-blocking way (via [async.Task:await()]),
+--- If a function is waited in a non-blocking way (via [async.Task:wait()]),
 --- errors are passed as part of the result in the form of `(err?, ...)`, where
 --- `err` is the error message and `...` are the results of the function when
 --- there is no error.
@@ -150,7 +150,7 @@ local threads = setmetatable({}, { __mode = 'k' })
 --- @return async.Task<any>?
 local function running()
   local task = threads[coroutine.running()]
-  if task and not (task:_completed() or task._closing) then
+  if task and not (task._future:completed() or task._closing) then
     return task
   end
 end
@@ -158,8 +158,7 @@ end
 --- Base class for async tasks. Async functions should return a subclass of
 --- this. This is designed specifically to be a base class of uv_handle_t
 --- @class async.Handle
---- @field close fun(self: async.Handle, callback?: fun())
---- @field is_closing? fun(self: async.Handle): boolean
+--- @field close fun(self, callback?: fun())
 
 --- Tasks are used to run coroutines in event loops. If a coroutine needs to
 --- wait on the event loop, the Task suspends the execution of the coroutine and
@@ -176,7 +175,7 @@ end
 --- -- If a
 --- -- coroutine is awaiting on a Future object during cancellation, the Future
 --- -- object will be cancelled.
---- @class async.Task<R> : async.Handle
+--- @class async.Task<R>
 --- @field private _thread thread
 --- @field package _future async.Future<R>
 --- @field package _closing boolean
@@ -184,7 +183,7 @@ end
 --- Tasks can await other async functions (task of callback functions)
 --- when we are waiting on a child, we store the handle to it here so we can
 --- cancel it.
---- @field private _current_child? async.Handle
+--- @field private _current_child? async.Task|async.Handle
 local Task = {}
 Task.__index = Task
 
@@ -206,99 +205,59 @@ function Task._new(func)
   return self
 end
 
---- Add a callback to be run when the Task has completed.
----
---- The callback is called with the arguments:
---- - (`err: string`) - if the Task completed with an error.
---- - (`nil`, `...:any`) - the results of the Task if it completed successfully.
----
---- If the Task is already done when this method is called, the callback is
---- called immediately with the results.
---- @param callback fun(err?: any, ...: any)
-function Task:await(callback)
-  if self._closing then
-    callback('Task is closing or closed')
-  else
-    self._future:await(callback)
-  end
-end
-
---- @package
-function Task:_completed()
-  return self._future:completed()
-end
-
 -- Use max 32-bit signed int value to avoid overflow on 32-bit systems.
 -- Do not use `math.huge` as it is not interpreted as a positive integer on all
 -- platforms.
 local MAX_TIMEOUT = 2 ^ 31 - 1
 
---# pwait exists because `pcall+wait` is a bit clumsy.
---#
---# ```
---# task:pwait(timeout)
---# ```
---# vs
---# ```
---# pcall(task.wait, task, timeout)
---# -- or
---# pcall(function()
---#   task:pwait(timeout)
---# end)
---# ```
-
---- Synchronously wait (protected) for a task to finish (blocking)
----
---- If an error is returned, `Task:traceback()` can be used to get the
---- stack trace of the error.
----
---- Example:
---- ```lua
----
----   local ok, err_or_result = task:pwait(10)
----
----   if not ok then
----     error(task:traceback(err_or_result))
----   end
----
----   local _, result = assert(task:pwait(10))
---- ```
----
---- Can be called if a task is closing.
---- @param timeout? integer
---- @return boolean status
---- @return any ... result or error
-function Task:pwait(timeout)
-  local done = vim.wait(timeout or MAX_TIMEOUT, function()
-    -- Note we use self:_completed() instead of self:await() to avoid creating a
-    -- callback. This avoids having to cleanup/unregister any callback in the
-    -- case of a timeout.
-    return self._future:completed()
-  end)
-
-  if not done then
-    return false, 'timeout'
-  end
-
-  return self._future:result()
+--- @return_cast obj function
+local function is_callable(obj)
+  return vim.is_callable(obj)
 end
 
---- Synchronously wait for a task to finish (blocking)
+--- Add a callback to be run when the Task has completed.
 ---
---- Example:
---- ```lua
+--- - If a timeout or `nil` is provided, the Task will synchronously wait for the
+---   task to complete for the given time in milliseconds.
+---
+---   ```lua
 ---   local result = task:wait(10) -- wait for 10ms or else error
 ---
 ---   local result = task:wait() -- wait indefinitely
---- ```
---- @param timeout? integer Timeout in milliseconds
---- @return any ... result
-function Task:wait(timeout)
-  local res = pack_len(self:pwait(timeout))
-  local stat = res[1]
+---   ```
+---
+--- - If a function is provided, it will be called when the Task has completed
+---   with the arguments:
+---   - (`err: string`) - if the Task completed with an error.
+---   - (`nil`, `...:any`) - the results of the Task if it completed successfully.
+---
+---
+--- If the Task is already done when this method is called, the callback is
+--- called immediately with the results.
+--- @param callback_or_timeout integer|fun(err?: any, ...: R...)?
+--- @overload fun(timeout?: integer): R...
+function Task:wait(callback_or_timeout)
+  if is_callable(callback_or_timeout) then
+    if self._closing then
+      callback_or_timeout('Task is closing or closed')
+    else
+      self._future:wait(callback_or_timeout)
+    end
+    return
+  end
 
-  if not stat then
-    error(self:traceback(res[2]))
+  if
+    not vim.wait(callback_or_timeout or MAX_TIMEOUT, function()
+      return self._future:completed()
+    end)
+  then
+    error('timeout', 2)
+  end
+
+  local res = pack_len(self._future:result())
+
+  if not res[1] then
+    error(res[2], 2)
   end
 
   return unpack_len(res, 2)
@@ -345,7 +304,7 @@ end
 --- If a task completes with an error, raise the error
 --- @return async.Task self
 function Task:raise_on_error()
-  self:await(function(err)
+  self:wait(function(err)
     if err then
       error(self:_traceback(err), 0)
     end
@@ -362,56 +321,34 @@ function Task:_finish(err, result)
   self._future:complete(err, unpack_len(result))
 end
 
---- @return boolean
-function Task:is_closing()
-  return self._closing
-end
-
---- Close the task and all its children.
+--- Close the task and all of its children.
 --- If callback is provided it will run asynchronously,
 --- else it will run synchronously.
 ---
---- @param callback? fun()
+--- @param callback? fun(closed: boolean)
+--- @overload fun(): boolean
+--- @overload fun(callback: fun(closed: boolean))
 function Task:close(callback)
-  if self:_completed() then
-    if callback then
-      callback()
+  return M.run(function()
+    if self._future:completed() or self._closing then
+      return false
     end
-    return
-  end
 
-  if self._closing then
-    return
-  end
+    self._closing = true
 
-  self._closing = true
-
-  if callback then -- async
     if self._current_child then
-      self._current_child:close(function()
-        self:_finish('closed')
-        callback()
+      M.await(1, function(on_child_close)
+        self._current_child:close(on_child_close)
       end)
-    else
-      self:_finish('closed')
-      callback()
     end
-  else -- sync
-    if self._current_child then
-      self._current_child:close(function()
-        self:_finish('closed')
-      end)
-    else
-      self:_finish('closed')
-    end
-    vim.wait(0, function()
-      return self:_completed()
-    end)
-  end
+    self:_finish('closed')
+    return true
+  end):wait(callback)
 end
 
 --- @param obj any
 --- @return boolean
+--- @return_cast obj async.Handle
 local function is_async_handle(obj)
   local ty = type(obj)
   return (ty == 'table' or ty == 'userdata') and vim.is_callable(obj.close)
@@ -439,7 +376,6 @@ function Task:_resume(...)
     local ok, r
     ok, r = pcall(fn, function(...)
       if is_async_handle(r) then
-        --- @cast r async.Handle
         -- We must close children before we resume to ensure
         -- all resources are collected.
         local args = pack_len(...)
@@ -553,7 +489,7 @@ end
 local function await_task(task)
   --- @param callback fun(err?: string, ...: any)
   local res = pack_len(yield(function(callback)
-    task:await(callback)
+    task:wait(callback)
     return task
   end))
 
@@ -718,7 +654,7 @@ function M._create(argc, func)
     --- @type fun(err:string?, ...:any)?
     local callback = argc and select(argc + 1, ...) or nil
     if callback and type(callback) == 'function' then
-      task:await(callback)
+      task:wait(callback)
     end
 
     task:_resume(unpack({ ... }, 1, argc))
@@ -820,7 +756,7 @@ function M.iter(tasks)
     end
 
     futs[task._future] = cb
-    task:await(cb)
+    task:wait(cb)
   end
 
   return gc_fun(
@@ -970,7 +906,7 @@ do --- future()
   --- If the Future is already done when this method is called, the callback is
   --- called immediately with the results.
   --- @param callback fun(err?: any, ...: any)
-  function Future:await(callback)
+  function Future:wait(callback)
     if self:completed() then -- TODO(lewis6991): test
       -- Already finished or closed
       callback(self._err, unpack_len(self._result))

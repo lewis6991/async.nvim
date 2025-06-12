@@ -81,7 +81,7 @@ describe('async', function()
 
     task:close()
 
-    local ok, err = task:pwait(1000)
+    local ok, err = pcall(task.wait, task, 1000)
 
     assert(not ok and err == 'closed', task:traceback(err))
     assert(weak.timer)
@@ -102,15 +102,13 @@ describe('async', function()
       return timer
     end)
 
-    local fn = async(function()
+    local task = run(function()
       wfn()
     end)
 
-    local task = fn()
-
     task:close()
 
-    local ok, err = task:pwait(1000)
+    local ok, err = pcall(task.wait, task, 1000)
 
     assert(not ok and err == 'closed', task:traceback(err))
     assert(weak.timer and weak.timer:is_closing() == true)
@@ -135,7 +133,7 @@ describe('async', function()
 
     task:close()
 
-    local ok, err = task:pwait(1000)
+    local ok, err = pcall(task.wait, task, 1000)
     assert(not ok and err == 'closed', task:traceback(err))
     assert(weak.timer and weak.timer:is_closing() == true)
 
@@ -156,13 +154,13 @@ describe('async', function()
     end)
 
     do
-      local ok, err = task:pwait(1)
+      local ok, err = pcall(task.wait, task, 1)
       assert(not ok and err == 'timeout', task:traceback(err))
       task:close()
     end
 
     -- Can use wait() again to wait for the task to close
-    local ok, err = task:pwait(1000)
+    local ok, err = pcall(task.wait, task, 1000)
     assert(not ok and err == 'closed', err)
     assert(weak.timer and weak.timer:is_closing() == true)
 
@@ -184,7 +182,7 @@ describe('async', function()
       error('GOT HERE')
     end)
 
-    local ok, err = task:pwait(10)
+    local ok, err = pcall(task.wait, task, 10)
 
     assert(not ok, 'Expected error')
     assert(assert(err):match('GOT HERE'), task:traceback(err))
@@ -224,7 +222,7 @@ describe('async', function()
       a = a + 1
     end)
 
-    task:await(function()
+    task:wait(function()
       did_cb = true
     end)
 
@@ -276,7 +274,7 @@ describe('async', function()
         error('ERROR')
       end)
     end)
-    local ok, err = task:pwait(100)
+    local ok, err = pcall(task.wait, task, 100)
     assert(not ok and err:match('ERROR'))
   end)
 
@@ -297,7 +295,7 @@ describe('async', function()
       error('GOT HERE')
     end)
 
-    local ok, err = task2:pwait(1000)
+    local ok, err = pcall(task2.wait, task2, 1000)
     assert(not ok and err:match('async_spec.lua:%d+: GOT HERE'), task2:traceback(err))
 
     eq(expected, results)
@@ -331,7 +329,7 @@ describe('async', function()
     -- >         test/async_spec.lua:310: in function <test/async_spec.lua:297>
     -- >         [string "<nvim>"]:2: in main chunk
 
-    local ok, err = task:pwait(1000)
+    local ok, err = pcall(task.wait, task, 1000)
     assert(not ok)
 
     local m = [[test/async_spec.lua:%d+: GOT HERE

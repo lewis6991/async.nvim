@@ -96,7 +96,7 @@ a blocking or non-blocking manner.
 If a function is waited in a blocking call (via |async.await()| or |async.Task:wait()|),
 errors are raised immediately.
 
-If a function is waited in a non-blocking way (via |async.Task:await()|),
+If a function is waited in a non-blocking way (via |async.Task:wait()|),
 errors are passed as part of the result in the form of `(err?, ...)`, where
 `err` is the error message and `...` are the results of the function when
 there is no error.
@@ -535,7 +535,7 @@ async.Future:result()                                  *async.Future:result()*
     - {error} (`any ...`): or result
 
 ------------------------------------------------------------------------------
-async.Future:await({callback})                          *async.Future:await()*
+async.Future:wait({callback})                            *async.Future:wait()*
 
     Add a callback to be run when the Future is done.
 
@@ -568,12 +568,7 @@ this. This is designed specifically to be a base class of uv_handle_t
 
 ------------------------------------------------------------------------------
 *async.Handle.close*
-    Type: `fun(self: async.Handle, callback: (fun(...) -> ...)?)
-
-
-------------------------------------------------------------------------------
-*async.Handle.is_closing*
-    Type: `(fun(self: async.Handle) -> boolean)?
+    Type: `fun(self, callback: (fun(...) -> ...)?)
 
 
 ==============================================================================
@@ -700,67 +695,36 @@ Note a Task can be waited on via more than one waiter.
 
 
 ------------------------------------------------------------------------------
-async.Task:await({callback})                              *async.Task:await()*
+async.Task:wait({callback_or_timeout})                     *async.Task:wait()*
 
     Add a callback to be run when the Task has completed.
 
-    The callback is called with the arguments:
-    - (`err: string`) - if the Task completed with an error.
-    - (`nil`, `...:any`) - the results of the Task if it completed successfully.
+    - If a timeout or `nil` is provided, the Task will synchronously wait for the
+    task to complete for the given time in milliseconds.
 
-    If the Task is already done when this method is called, the callback is
-    called immediately with the results.
-
-    Parameters: ~
-    - {callback} (`fun(err: any, ...: any)`)
-
-
-------------------------------------------------------------------------------
-async.Task:pwait({timeout})                               *async.Task:pwait()*
-
-    Synchronously wait (protected) for a task to finish (blocking)
-
-    If an error is returned, `Task:traceback()` can be used to get the
-    stack trace of the error.
-
-    Example:
-    >lua
-
-       local ok, err_or_result = task:pwait(10)
-
-       if not ok then
-         error(task:traceback(err_or_result))
-       end
-
-       local _, result = assert(task:pwait(10))
-<
-
-    Can be called if a task is closing.
-
-    Parameters: ~
-    - {timeout} (`integer?`)
-
-    Returns: ~
-    - {status} (`boolean`)
-    - {result} (`any ...`): or error
-
-------------------------------------------------------------------------------
-async.Task:wait({timeout})                                 *async.Task:wait()*
-
-    Synchronously wait for a task to finish (blocking)
-
-    Example:
     >lua
        local result = task:wait(10) -- wait for 10ms or else error
 
        local result = task:wait() -- wait indefinitely
 <
 
+    - If a function is provided, it will be called when the Task has completed
+    with the arguments:
+    - (`err: string`) - if the Task completed with an error.
+    - (`nil`, `...:any`) - the results of the Task if it completed successfully.
+
+
+    If the Task is already done when this method is called, the callback is
+    called immediately with the results.
+
+    Overloads: ~
+    - `fun(timeout: integer?) -> R ...`
+
     Parameters: ~
-    - {timeout} (`integer?`): Timeout in milliseconds
+    - {callback_or_timeout} (`(integer|fun(err: any, ...: R ...))?`)
 
     Returns: ~
-    - {result} (`any ...`)
+    - (`any ...?`)
 
 ------------------------------------------------------------------------------
 async.Task:traceback({msg})                           *async.Task:traceback()*
@@ -783,20 +747,21 @@ async.Task:raise_on_error()                      *async.Task:raise_on_error()*
     - {self} (`async.Task`) (See |async.Task|)
 
 ------------------------------------------------------------------------------
-async.Task:is_closing()                              *async.Task:is_closing()*
-    Returns: ~
-    - (`boolean`)
-
-------------------------------------------------------------------------------
 async.Task:close({callback})                              *async.Task:close()*
 
-    Close the task and all its children.
+    Close the task and all of its children.
     If callback is provided it will run asynchronously,
     else it will run synchronously.
 
-    Parameters: ~
-    - {callback} (`(fun())?`)
+    Overloads: ~
+    - `fun() -> boolean`
+    - `fun(callback: fun(closed: boolean))`
 
+    Parameters: ~
+    - {callback} (`(fun(closed: boolean))?`)
+
+    Returns: ~
+    - (`any ...?`)
 
 ------------------------------------------------------------------------------
 async.Task:status()                                      *async.Task:status()*
