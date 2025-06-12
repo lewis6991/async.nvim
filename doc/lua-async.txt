@@ -170,6 +170,10 @@ async.await({...})                                             *async.await()*
          async.await(1, vim.schedule)
        end
 
+       do -- await a callback function (if function only has a callback argument)
+         async.await(vim.schedule)
+       end
+
        do -- await a task (new async context)
          local n, s = async.await(task)
          assert(n == 1 and s == 'a')
@@ -198,7 +202,8 @@ async.await({...})                                             *async.await()*
     - `T`, `R`
 
     Overloads: ~
-    - `fun(argc: integer, func: fun(...: T ..., callback: fun(...: R ...)) -> async.Handle?, ...: T ...) -> R ...`
+    - `fun(func: fun(callback: fun(...: R ...)) -> async.Closable?) -> R ...`
+    - `fun(argc: integer, func: fun(...: T ..., callback: fun(...: R ...)) -> async.Closable?, ...: T ...) -> R ...`
     - `fun(task: Task<R>) -> R ...`
     - `fun(taskfun: TaskFun<R>) -> R ...`
 
@@ -242,7 +247,7 @@ async.wrap({argc}, {func})                                      *async.wrap()*
 
     Parameters: ~
     - {argc} (`integer`)
-    - {func} (`fun(...: T, callback: fun(...: R))`)
+    - {func} (`fun(...: T, callback: fun(...: R)) -> async.Closable?`)
 
     Returns: ~
     - (`async fun(...: T) -> R`)
@@ -371,6 +376,27 @@ async.sleep({duration})                                        *async.sleep()*
 
 
 ------------------------------------------------------------------------------
+async.timeout({duration}, {task})                            *async.timeout()*
+
+    Run a task with a timeout.
+
+    If the task does not complete within the specified duration, it is cancelled
+    and an error is thrown.
+
+    Attributes: ~
+    - `async`
+
+    Generics: ~
+    - `R`
+
+    Parameters: ~
+    - {duration} (`???`)
+    - {task} (`Task<R>`)
+
+    Returns: ~
+    - (`unknown`)
+
+------------------------------------------------------------------------------
 async.future()                                                *async.future()*
 
     Create a new future
@@ -446,19 +472,26 @@ async.semaphore({permits})                                 *async.semaphore()*
     Create an async semaphore that allows up to a given number of acquisitions.
 
     >lua
-      local semaphore = async.semaphore(2)
+     async.run(function()
+       local semaphore = async.semaphore(2)
 
-      local value = 0
-      for _ = 1, 10 do
-        async.run(function()
-          semaphore:with(function()
-            value = value + 1
-            sleep(10)
-            print(value) -- Never more than 2
-            value = value - 1
-          end)
-        end)
-      end
+       local tasks = {}
+
+       local value = 0
+       for i = 1, 10 do
+         tasks|i| = async.run(function()
+           semaphore:with(function()
+             value = value + 1
+             sleep(10)
+             print(value) -- Never more than 2
+             value = value - 1
+           end)
+         end)
+       end
+
+       async.join(tasks)
+       assert(value <= 2)
+     end)
 <
 
     Parameters: ~
@@ -466,6 +499,10 @@ async.semaphore({permits})                                 *async.semaphore()*
 
     Returns: ~
     - (`async.Semaphore`) (See |async.Semaphore|)
+
+==============================================================================
+*async.Closable*
+    Type: `{ close: fun(self, callback: (fun(...) -> ...)?) }
 
 ==============================================================================
 *async.Event*
@@ -494,6 +531,9 @@ async.Event:wait()                                        *async.Event:wait()*
 
     If the event is set, return `true` immediately. Otherwise block until
     another task calls set().
+
+    Attributes: ~
+    - `async`
 
 
 ------------------------------------------------------------------------------
@@ -558,17 +598,6 @@ async.Future:complete({err}, {...})                  *async.Future:complete()*
     Parameters: ~
     - {err} (`string?`)
     - {...} (`any`): result
-
-
-==============================================================================
-*async.Handle*
-
-Base class for async tasks. Async functions should return a subclass of
-this. This is designed specifically to be a base class of uv_handle_t
-
-------------------------------------------------------------------------------
-*async.Handle.close*
-    Type: `fun(self, callback: (fun(...) -> ...)?)
 
 
 ==============================================================================
@@ -667,6 +696,9 @@ async.Semaphore:acquire()                          *async.Semaphore:acquire()*
 
     If the internal counter is greater than zero, decrement it by `1` and
     return immediately. If it is `0`, wait until a `release()` is called.
+
+    Attributes: ~
+    - `async`
 
 
 ------------------------------------------------------------------------------

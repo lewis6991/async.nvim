@@ -27,6 +27,17 @@ describe('async', function()
       _G.wrap = Async.wrap
       _G.schedule = Async.schedule
 
+      function _G.check_timer(weak)
+        assert(weak.timer and weak.timer:is_closing(), 'Timer is not closing')
+        collectgarbage('collect')
+        assert(not next(weak), 'Resources not collected')
+      end
+
+      function _G.check_task_err(task, pat)
+        local ok, err = pcall(task.wait, task, 10)
+        assert(not ok and err:match(pat), task:traceback(err))
+      end
+
       function _G.eq(expected, actual)
         assert(
           vim.deep_equal(expected, actual),
@@ -75,20 +86,36 @@ describe('async', function()
         -- Never call callback
         local timer = vim.uv.new_timer()
         weak.timer = timer
-        return timer
+        return timer --[[@as async.Closable]]
       end)
     end)
 
     task:close()
 
-    local ok, err = pcall(task.wait, task, 1000)
+    check_task_err(task, 'closed')
+    check_timer(weak)
+  end)
 
-    assert(not ok and err == 'closed', task:traceback(err))
-    assert(weak.timer)
-    assert(weak.timer:is_closing())
+  it_exec('callback function can be double closed', function()
+    --- @type { timer: uv.uv_timer_t? }
+    local weak = setmetatable({}, { __mode = 'v' })
 
-    collectgarbage('collect')
-    assert(not next(weak), 'Resources not collected')
+    local task = run(function()
+      await(1, function(callback)
+        -- Never call callback
+        local timer = assert(vim.uv.new_timer())
+        weak.timer = timer
+
+        -- prematurely close the timer
+        timer:close(callback)
+        return timer --[[@as async.Closable]]
+      end)
+
+      return 'FINISH'
+    end)
+
+    check_task_err(task, 'handle .* is already closing')
+    check_timer(weak)
   end)
 
   -- Same as test above but uses async and wrap
@@ -99,7 +126,7 @@ describe('async', function()
       -- Never call callback
       local timer = vim.uv.new_timer()
       weak.timer = timer
-      return timer
+      return timer --[[@as async.Closable]]
     end)
 
     local task = run(function()
@@ -108,13 +135,8 @@ describe('async', function()
 
     task:close()
 
-    local ok, err = pcall(task.wait, task, 1000)
-
-    assert(not ok and err == 'closed', task:traceback(err))
-    assert(weak.timer and weak.timer:is_closing() == true)
-
-    collectgarbage('collect')
-    assert(not next(weak), 'Resources not collected')
+    check_task_err(task, 'closed')
+    check_timer(weak)
   end)
 
   it_exec('callback function can be closed (nested)', function()
@@ -122,96 +144,72 @@ describe('async', function()
 
     local task = run(function()
       await(run(function()
-        await(1, function(_callback)
+        await(function(_callback)
           -- Never call callback
           local timer = assert(vim.uv.new_timer())
           weak.timer = timer
-          return timer
+          return timer --[[@as async.Closable]]
         end)
       end))
     end)
 
     task:close()
 
-    local ok, err = pcall(task.wait, task, 1000)
-    assert(not ok and err == 'closed', task:traceback(err))
-    assert(weak.timer and weak.timer:is_closing() == true)
-
-    collectgarbage('collect')
-    assert(not next(weak), 'Resources not collected')
+    check_task_err(task, 'closed')
+    check_timer(weak)
   end)
 
   it_exec('can timeout tasks', function()
     local weak = setmetatable({}, { __mode = 'v' })
 
     local task = run(function()
-      await(1, function(_callback)
+      await(function(_callback)
         -- Never call callback
         local timer = assert(vim.uv.new_timer())
         weak.timer = timer
-        return timer
+        return timer --[[@as async.Closable]]
       end)
     end)
 
-    do
-      local ok, err = pcall(task.wait, task, 1)
-      assert(not ok and err == 'timeout', task:traceback(err))
-      task:close()
-    end
-
-    -- Can use wait() again to wait for the task to close
-    local ok, err = pcall(task.wait, task, 1000)
-    assert(not ok and err == 'closed', err)
-    assert(weak.timer and weak.timer:is_closing() == true)
-
-    collectgarbage('collect')
-    assert(not next(weak), 'Resources not collected')
+    check_task_err(task, 'timeout')
+    task:close()
+    check_task_err(task, 'closed')
+    check_timer(weak)
   end)
 
   it_exec('handle tasks that error', function()
     local weak = setmetatable({}, { __mode = 'v' })
 
     local task = run(function()
-      await(1, function(callback)
+      await(function(callback)
         local timer = assert(vim.uv.new_timer())
         timer:start(1, 0, callback)
         weak.timer = timer
-        return timer
+        return timer --[[@as async.Closable]]
       end)
       schedule()
       error('GOT HERE')
     end)
 
-    local ok, err = pcall(task.wait, task, 10)
-
-    assert(not ok, 'Expected error')
-    assert(assert(err):match('GOT HERE'), task:traceback(err))
-
-    assert(weak.timer and weak.timer:is_closing() == true, 'Timer is not closing')
-
-    collectgarbage('collect')
-    assert(not next(weak), 'Resources not collected')
+    check_task_err(task, 'GOT HERE')
+    check_timer(weak)
   end)
 
   it_exec('handle tasks that complete', function()
     local weak = setmetatable({}, { __mode = 'v' })
 
     local task = run(function()
-      await(1, function(callback)
+      await(function(callback)
         local timer = assert(vim.uv.new_timer())
         timer:start(1, 0, callback)
         weak.timer = timer
-        return timer
+        return timer --[[@as async.Closable]]
       end)
       schedule()
     end)
 
     task:wait(10)
-
-    assert(weak.timer and weak.timer:is_closing() == true, 'Timer is not closing')
-
-    collectgarbage('collect')
-    assert(not next(weak), 'Resources not collected')
+    check_timer(weak)
   end)
 
   it_exec('can wait on an empty task', function()
@@ -233,7 +231,7 @@ describe('async', function()
   end)
 
   it_exec('can iterate tasks', function()
-    local tasks = {} --- @type async.Task[]
+    local tasks = {} --- @type async.Task<any>[]
 
     local expected = {} --- @type table[]
 
@@ -260,7 +258,7 @@ describe('async', function()
   it_exec('can await a run task', function()
     local a = run(function()
       return await(run(function()
-        await(1, vim.schedule)
+        await(vim.schedule)
         return 'JJ'
       end))
     end):wait(10)
@@ -270,12 +268,11 @@ describe('async', function()
 
   it_exec('handle errors in wrapped functions', function()
     local task = run(function()
-      await(1, function(_callback)
+      await(function(_callback)
         error('ERROR')
       end)
     end)
-    local ok, err = pcall(task.wait, task, 100)
-    assert(not ok and err:match('ERROR'))
+    check_task_err(task, 'ERROR')
   end)
 
   it_exec('iter tasks followed by error', function()
@@ -295,9 +292,7 @@ describe('async', function()
       error('GOT HERE')
     end)
 
-    local ok, err = pcall(task2.wait, task2, 1000)
-    assert(not ok and err:match('async_spec.lua:%d+: GOT HERE'), task2:traceback(err))
-
+    check_task_err(task2, 'async_spec.lua:%d+: GOT HERE')
     eq(expected, results)
   end)
 
@@ -379,5 +374,13 @@ stack traceback:
         'end5',
       }, ret)
     end)
+  end)
+
+  it_exec('can async timeout a test', function()
+    local eternity = run(await, function(_cb)
+      -- Never call callback
+    end)
+
+    check_task_err(run(Async.timeout, 10, eternity), 'timeout')
   end)
 end)

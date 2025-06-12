@@ -155,10 +155,7 @@ local function running()
   end
 end
 
---- Base class for async tasks. Async functions should return a subclass of
---- this. This is designed specifically to be a base class of uv_handle_t
---- @class async.Handle
---- @field close fun(self, callback?: fun())
+--- @alias async.Closable { close: fun(self, callback?: fun()) }
 
 --- Tasks are used to run coroutines in event loops. If a coroutine needs to
 --- wait on the event loop, the Task suspends the execution of the coroutine and
@@ -175,7 +172,7 @@ end
 --- -- If a
 --- -- coroutine is awaiting on a Future object during cancellation, the Future
 --- -- object will be cancelled.
---- @class async.Task<R>
+--- @class async.Task<R>: async.Closable
 --- @field private _thread thread
 --- @field package _future async.Future<R>
 --- @field package _closing boolean
@@ -183,7 +180,7 @@ end
 --- Tasks can await other async functions (task of callback functions)
 --- when we are waiting on a child, we store the handle to it here so we can
 --- cancel it.
---- @field private _current_child? async.Task|async.Handle
+--- @field private _current_child? async.Task|async.Closable
 local Task = {}
 Task.__index = Task
 
@@ -348,8 +345,8 @@ end
 
 --- @param obj any
 --- @return boolean
---- @return_cast obj async.Handle
-local function is_async_handle(obj)
+--- @return_cast obj async.Closable
+local function is_closable(obj)
   local ty = type(obj)
   return (ty == 'table' or ty == 'userdata') and vim.is_callable(obj.close)
 end
@@ -357,7 +354,7 @@ end
 --- @param ... any
 function Task:_resume(...)
   --- @diagnostic disable-next-line: assign-type-mismatch
-  --- @type [boolean, string|fun(...:R...): async.Handle?]
+  --- @type [boolean, string|fun(...:R...): async.Closable?]
   local ret = pack_len(coroutine.resume(self._thread, ...))
   local stat = ret[1]
 
@@ -372,16 +369,21 @@ function Task:_resume(...)
     local fn = ret[2]
     --- @cast fn -string
 
-    -- TODO(lewis6991): refine error handler to be more specific
     local ok, r
     ok, r = pcall(fn, function(...)
-      if is_async_handle(r) then
-        -- We must close children before we resume to ensure
+      if is_closable(r) then
+        -- We must close the closable child before we resume to ensure
         -- all resources are collected.
         local args = pack_len(...)
-        r:close(function()
+
+        local close_ok, close_err = pcall(r.close, r, function()
           self:_resume(unpack_len(args))
         end)
+
+        if not close_ok then
+          self:_finish(close_err)
+          return
+        end
       else
         self:_resume(...)
       end
@@ -389,7 +391,7 @@ function Task:_resume(...)
 
     if not ok then
       self:_finish(r)
-    elseif is_async_handle(r) then
+    elseif is_closable(r) then
       self._current_child = r
     end
   end
@@ -476,7 +478,7 @@ end
 
 --- @async
 --- @generic R
---- @param fun fun(...:R...): async.Handle?
+--- @param fun fun(...:R...): async.Closable?
 --- @return R...
 local function yield(fun)
   assert(type(fun) == 'function', 'Expected function')
@@ -522,6 +524,7 @@ local function await_cbfun(argc, fun, ...)
   end)
 end
 
+--- @async
 --- @param taskfun async.TaskFun
 --- @param ... any
 --- @return any ...
@@ -544,6 +547,10 @@ end
 --- async.run(function()
 ---   do -- await a callback function
 ---     async.await(1, vim.schedule)
+---   end
+---
+---   do -- await a callback function (if function only has a callback argument)
+---     async.await(vim.schedule)
 ---   end
 ---
 ---   do -- await a task (new async context)
@@ -569,7 +576,8 @@ end
 --- @async
 --- @generic T, R
 --- @param ... any see overloads
---- @overload fun(argc: integer, func: (fun(...:T..., callback: fun(...:R...)): async.Handle?), ...:T...): R...
+--- @overload fun(func: (fun(callback: fun(...:R...)): async.Closable?)): R...
+--- @overload fun(argc: integer, func: (fun(...:T..., callback: fun(...:R...)): async.Closable?), ...:T...): R...
 --- @overload fun(task: async.Task<R>): R...
 --- @overload fun(taskfun: async.TaskFun<R>): R...
 function M.await(...)
@@ -579,6 +587,8 @@ function M.await(...)
 
   if type(arg1) == 'number' then
     return await_cbfun(...)
+  elseif type(arg1) == 'function' then
+    return await_cbfun(1, arg1)
   elseif getmetatable(arg1) == Task then
     return await_task(...)
   elseif getmetatable(arg1) == TaskFun then
@@ -616,7 +626,7 @@ end
 ---
 --- @generic T, R
 --- @param argc integer
---- @param func fun(...: T, callback: fun(...: R))
+--- @param func fun(...: T, callback: fun(...: R)): async.Closable?
 --- @return async fun(...:T): R
 function M.wrap(argc, func)
   assert(type(argc) == 'number')
@@ -732,9 +742,11 @@ function M.iter(tasks)
   --- garbage collect the callbacks until at least one awaiter is called.
   local can_gc_cbs = false
 
+  -- Wait on all the tasks. Keep references to the task futures and wait
+  -- callbacks so we can remove them when the iterator is garbage collected.
   for i, task in ipairs(tasks) do
     local function cb(err, ...)
-      if can_gc_cbs == true then
+      if can_gc_cbs then
         for fut, tcb in pairs(futs) do
           fut:_remove_cb(tcb)
         end
@@ -778,64 +790,55 @@ function M.iter(tasks)
   )
 end
 
-do -- join()
-  --- @param results table<integer,table>
-  --- @param i? integer
-  --- @param ... any
-  --- @return boolean
-  local function collect(results, i, ...)
+--- Wait for all tasks to finish and return their results.
+---
+--- Example:
+--- ```lua
+--- local task1 = async.run(function()
+---   return 1, 'a'
+--- end)
+---
+--- local task2 = async.run(function()
+---   return 1, 'a'
+--- end)
+---
+--- local task3 = async.run(function()
+---   error('task3 error')
+--- end)
+---
+--- async.run(function()
+---   local results = async.join({task1, task2, task3})
+---   print(vim.inspect(results))
+--- end)
+--- ```
+---
+--- Prints:
+--- ```
+--- {
+---   [1] = { nil, 1, 'a' },
+---   [2] = { nil, 2, 'b' },
+---   [3] = { 'task2 error' },
+--- }
+--- ```
+--- @async
+--- @param tasks async.Task<any>[]
+--- @return table<integer,[any?,...?]>
+function M.join(tasks)
+  assert(running(), 'Not in async context')
+  local iter = M.iter(tasks)
+  local results = {} --- @type table<integer,table>
+
+  local function collect(i, ...)
     if i then
       results[i] = pack_len(...)
     end
     return i ~= nil
   end
 
-  --- @param iter fun(): ...
-  --- @return table<integer,table>
-  local function drain_iter(iter)
-    local results = {} --- @type table<integer,table>
-    while collect(results, iter()) do
-    end
-    return results
+  while collect(iter()) do
   end
 
-  --- Wait for all tasks to finish and return their results.
-  ---
-  --- Example:
-  --- ```lua
-  --- local task1 = async.run(function()
-  ---   return 1, 'a'
-  --- end)
-  ---
-  --- local task2 = async.run(function()
-  ---   return 1, 'a'
-  --- end)
-  ---
-  --- local task3 = async.run(function()
-  ---   error('task3 error')
-  --- end)
-  ---
-  --- async.run(function()
-  ---   local results = async.join({task1, task2, task3})
-  ---   print(vim.inspect(results))
-  --- end)
-  --- ```
-  ---
-  --- Prints:
-  --- ```
-  --- {
-  ---   [1] = { nil, 1, 'a' },
-  ---   [2] = { nil, 2, 'b' },
-  ---   [3] = { 'task2 error' },
-  --- }
-  --- ```
-  --- @async
-  --- @param tasks async.Task<any>[]
-  --- @return table<integer,[any?,...?]>
-  function M.join(tasks)
-    assert(running(), 'Not in async context')
-    return drain_iter(M.iter(tasks))
-  end
+  return results
 end
 
 --- @async
@@ -853,6 +856,23 @@ function M.sleep(duration)
   M.await(1, function(callback)
     vim.defer_fn(callback, duration)
   end)
+end
+
+--- Run a task with a timeout.
+---
+--- If the task does not complete within the specified duration, it is cancelled
+--- and an error is thrown.
+--- @async
+--- @generic R
+--- @param task async.Task<R>
+function M.timeout(duration, task)
+  local timer = M.run(M.await, 2, vim.defer_fn, duration)
+  if M.joinany({ task, timer }) == 2 then
+    -- Timer finished first, cancel the task
+    task:close()
+    error('timeout')
+  end
+  return M.await(task)
 end
 
 do --- future()
@@ -999,6 +1019,7 @@ do --- event()
   ---
   --- If the event is set, return `true` immediately. Otherwise block until
   --- another task calls set().
+  --- @async
   function Event:wait()
     M.await(1, function(callback)
       if self._is_set then
@@ -1193,6 +1214,7 @@ do --- semaphore()
   ---
   --- If the internal counter is greater than zero, decrement it by `1` and
   --- return immediately. If it is `0`, wait until a `release()` is called.
+  --- @async
   function Semaphore:acquire()
     self._event:wait()
     self._permits = self._permits - 1
@@ -1214,19 +1236,26 @@ do --- semaphore()
   --- Create an async semaphore that allows up to a given number of acquisitions.
   ---
   --- ```lua
-  ---  local semaphore = async.semaphore(2)
+  --- async.run(function()
+  ---   local semaphore = async.semaphore(2)
   ---
-  ---  local value = 0
-  ---  for _ = 1, 10 do
-  ---    async.run(function()
-  ---      semaphore:with(function()
-  ---        value = value + 1
-  ---        sleep(10)
-  ---        print(value) -- Never more than 2
-  ---        value = value - 1
-  ---      end)
-  ---    end)
-  ---  end
+  ---   local tasks = {}
+  ---
+  ---   local value = 0
+  ---   for i = 1, 10 do
+  ---     tasks[i] = async.run(function()
+  ---       semaphore:with(function()
+  ---         value = value + 1
+  ---         sleep(10)
+  ---         print(value) -- Never more than 2
+  ---         value = value - 1
+  ---       end)
+  ---     end)
+  ---   end
+  ---
+  ---   async.join(tasks)
+  ---   assert(value <= 2)
+  --- end)
   --- ```
   --- @param permits integer
   --- @return async.Semaphore
