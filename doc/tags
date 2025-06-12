@@ -29,8 +29,6 @@ async.Task:raise_on_error()	lua-async.txt	/*async.Task:raise_on_error()*
 async.Task:status()	lua-async.txt	/*async.Task:status()*
 async.Task:traceback()	lua-async.txt	/*async.Task:traceback()*
 async.Task:wait()	lua-async.txt	/*async.Task:wait()*
-async.TaskFun	lua-async.txt	/*async.TaskFun*
-async.async()	lua-async.txt	/*async.async()*
 async.await()	lua-async.txt	/*async.await()*
 async.event()	lua-async.txt	/*async.event()*
 async.future()	lua-async.txt	/*async.future()*

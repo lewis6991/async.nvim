@@ -23,7 +23,6 @@ describe('async', function()
       _G.Async = require('async')
       _G.await = Async.await
       _G.run = Async.run
-      _G.async = Async.async
       _G.wrap = Async.wrap
       _G.schedule = Async.schedule
 

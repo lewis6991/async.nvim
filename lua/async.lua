@@ -5,7 +5,7 @@ local pcall = copcall or pcall
 --- - unlike python, async functions do not need to be awaited when within an
 --- async context, however Tasks and Task functions do.
 
---- The modules implements an asynchronous programming library for Neovim,
+--- This modules implements an asynchronous programming library for Neovim,
 --- enabling developers to write non-blocking, coroutine-based code. Below is a
 --- summary of its key features and components:
 ---
@@ -14,12 +14,10 @@ local pcall = copcall or pcall
 ---    - Async functions are annotated with `@async` and must run within an async context.
 ---
 --- 2. Task Management:
----    - [async.Task]: Represents a wrapped coroutine that can be paused and
----      resumed.
----    - Tasks can be awaited, canceled, or waited synchronously.
----    - Provides error handling and stack trace generation for debugging.
+---    - Create be `async.run()`.
+---    - Can be awaited, canceled, or waited synchronously.
 ---
---- 3. Await Mechanism:
+--- 3. Awaiting:
 ---    - [async.await()]: Allows blocking on asynchronous operations, such as
 ---      tasks or callback-based functions.
 ---    - Supports multiple overloads for tasks, task functions, and callback
@@ -27,7 +25,6 @@ local pcall = copcall or pcall
 ---
 --- 4. Task Wrapping:
 ---    - [async.wrap()]: Converts any callback-based functions into async functions.
----    - [async.async()]: Converts async functions into callable task functions.
 ---
 --- 5. Concurrency Utilities:
 ---    - [async.iter()]: Iterates over multiple tasks, yielding their results as
@@ -433,49 +430,6 @@ function M.run(func, ...)
   return task
 end
 
---- Represents a callable object that wraps an async function.
---- The object can be called to create and run an [async.Task].
----
---- Example:
---- ```lua
---- local task_fun = async.async(function(arg)
----   return 2, 'b', arg
---- end)
----
---- local task = task_fun('example')
----
---- -- Asynchronously wait for the task to finish
---- async.run(function()
----   local n, s, arg = async.await(task)
----   print(n, s, arg) -- Output: 2, 'b', 'example'
---- end)
----
---- -- Synchronously wait for the task to finish
---- local n, s, arg = task:wait()
---- print(n, s, arg) -- Output: 2, 'b', 'example'
---- ```
---- @class async.TaskFun<T, R>
---- @field package _fun fun(...: T...): R...
---- @operator call: async.Task<R>
-local TaskFun = {}
-TaskFun.__index = TaskFun
-
---- @param ... T...
-function TaskFun:__call(...)
-  return M.run(self._fun, ...)
-end
-
---- Convert an async function into a Task function.
----
---- Returns an [async.TaskFun] object which can be used to create an
---- [async.Task] for a given function.
---- @generic T, R
---- @param fun async fun(...:T...): R...
---- @return async.TaskFun<T, R>
-function M.async(fun)
-  return setmetatable({ _fun = fun }, TaskFun)
-end
-
 --- @async
 --- @generic R
 --- @param fun fun(...:R...): async.Closable?
@@ -522,14 +476,6 @@ local function await_cbfun(argc, fun, ...)
     args.n = math.max(args.n, argc)
     return fun(unpack_len(args))
   end)
-end
-
---- @async
---- @param taskfun async.TaskFun
---- @param ... any
---- @return any ...
-local function await_taskfun(taskfun, ...)
-  return taskfun._fun(...)
 end
 
 --- Asynchronous blocking wait
@@ -579,7 +525,6 @@ end
 --- @overload fun(func: (fun(callback: fun(...:R...)): async.Closable?)): R...
 --- @overload fun(argc: integer, func: (fun(...:T..., callback: fun(...:R...)): async.Closable?), ...:T...): R...
 --- @overload fun(task: async.Task<R>): R...
---- @overload fun(taskfun: async.TaskFun<R>): R...
 function M.await(...)
   assert(running(), 'Not in async context')
 
@@ -591,8 +536,6 @@ function M.await(...)
     return await_cbfun(1, arg1)
   elseif getmetatable(arg1) == Task then
     return await_task(...)
-  elseif getmetatable(arg1) == TaskFun then
-    return await_taskfun(...)
   end
 
   error('Invalid arguments, expected Task or (argc, func) got: ' .. vim.inspect(arg1), 2)

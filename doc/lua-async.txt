@@ -1,7 +1,7 @@
 ==============================================================================
 *async*
 
-The modules implements an asynchronous programming library for Neovim,
+This modules implements an asynchronous programming library for Neovim,
 enabling developers to write non-blocking, coroutine-based code. Below is a
 summary of its key features and components:
 
@@ -10,12 +10,10 @@ summary of its key features and components:
 - Async functions are annotated with `@async` and must run within an async context.
 
 2. Task Management:
-- |async.Task|: Represents a wrapped coroutine that can be paused and
-resumed.
-- Tasks can be awaited, canceled, or waited synchronously.
-- Provides error handling and stack trace generation for debugging.
+- Create be `async.run()`.
+- Can be awaited, canceled, or waited synchronously.
 
-3. Await Mechanism:
+3. Awaiting:
 - |async.await()|: Allows blocking on asynchronous operations, such as
 tasks or callback-based functions.
 - Supports multiple overloads for tasks, task functions, and callback
@@ -23,7 +21,6 @@ functions.
 
 4. Task Wrapping:
 - |async.wrap()|: Converts any callback-based functions into async functions.
-- |async.async()|: Converts async functions into callable task functions.
 
 5. Concurrency Utilities:
 - |async.iter()|: Iterates over multiple tasks, yielding their results as
@@ -134,23 +131,6 @@ async.run({func}, {...})                                         *async.run()*
     - (`Task<R>`)
 
 ------------------------------------------------------------------------------
-async.async({fun})                                             *async.async()*
-
-    Convert an async function into a Task function.
-
-    Returns an |async.TaskFun| object which can be used to create an
-    |async.Task| for a given function.
-
-    Generics: ~
-    - `T`, `R`
-
-    Parameters: ~
-    - {fun} (`async fun(...: T ...) -> R ...`)
-
-    Returns: ~
-    - (`TaskFun<T,R>`)
-
-------------------------------------------------------------------------------
 async.await({...})                                             *async.await()*
 
     Asynchronous blocking wait
@@ -205,7 +185,6 @@ async.await({...})                                             *async.await()*
     - `fun(func: fun(callback: fun(...: R ...)) -> async.Closable?) -> R ...`
     - `fun(argc: integer, func: fun(...: T ..., callback: fun(...: R ...)) -> async.Closable?, ...: T ...) -> R ...`
     - `fun(task: Task<R>) -> R ...`
-    - `fun(taskfun: TaskFun<R>) -> R ...`
 
     Parameters: ~
     - {...} (`any`): see overloads
@@ -394,7 +373,7 @@ async.timeout({duration}, {task})                            *async.timeout()*
     - {task} (`Task<R>`)
 
     Returns: ~
-    - (`unknown`)
+    - (`R`)
 
 ------------------------------------------------------------------------------
 async.future()                                                *async.future()*
@@ -802,30 +781,5 @@ async.Task:status()                                      *async.Task:status()*
 
     Returns: ~
     - (`("running"|"suspended"|"normal"|"dead")?`)
-
-==============================================================================
-*async.TaskFun*
-
-Represents a callable object that wraps an async function.
-The object can be called to create and run an |async.Task|.
-
-Example:
->lua
- local task_fun = async.async(function(arg)
-   return 2, 'b', arg
- end)
-
- local task = task_fun('example')
-
- -- Asynchronously wait for the task to finish
- async.run(function()
-   local n, s, arg = async.await(task)
-   print(n, s, arg) -- Output: 2, 'b', 'example'
- end)
-
- -- Synchronously wait for the task to finish
- local n, s, arg = task:wait()
- print(n, s, arg) -- Output: 2, 'b', 'example'
-<
 
 vim:tw=78:ts=8:sw=4:sts=4:et:ft=help:norl:
