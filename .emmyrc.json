@@ -1,0 +1,14 @@
+{
+  "diagnostics" : {
+    "disable" : [
+      "unnecessary-if"
+    ]
+  },
+  "strict": {
+    "typeCall": true,
+    "arrayIndex": true
+  },
+  "codeAction": {
+    "insertSpace": true
+  }
+}

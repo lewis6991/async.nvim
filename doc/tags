@@ -2,7 +2,6 @@ async	lua-async.txt	/*async*
 async-context	lua-async.txt	/*async-context*
 async-error-handling	lua-async.txt	/*async-error-handling*
 async-function	lua-async.txt	/*async-function*
-async.CallbackFn	lua-async.txt	/*async.CallbackFn*
 async.Event	lua-async.txt	/*async.Event*
 async.Event:clear()	lua-async.txt	/*async.Event:clear()*
 async.Event:set()	lua-async.txt	/*async.Event:set()*
@@ -47,4 +46,5 @@ async.queue()	lua-async.txt	/*async.queue()*
 async.run()	lua-async.txt	/*async.run()*
 async.schedule	lua-async.txt	/*async.schedule*
 async.semaphore()	lua-async.txt	/*async.semaphore()*
+async.sleep()	lua-async.txt	/*async.sleep()*
 async.wrap()	lua-async.txt	/*async.wrap()*

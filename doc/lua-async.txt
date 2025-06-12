@@ -124,14 +124,14 @@ async.run({func}, {...})                                         *async.run()*
 <
 
     Generics: ~
-    - `T`
+    - `T`, `R`
 
     Parameters: ~
-    - {func} (`async fun(...: T ...)`): Function to run in an async context
+    - {func} (`async fun(...: T ...) -> R ...`): Function to run in an async context
     - {...} (`T ...`): Arguments to pass to the function
 
     Returns: ~
-    - (`async.Task`) (See |async.Task|)
+    - (`Task<R>`)
 
 ------------------------------------------------------------------------------
 async.async({fun})                                             *async.async()*
@@ -141,11 +141,14 @@ async.async({fun})                                             *async.async()*
     Returns an |async.TaskFun| object which can be used to create an
     |async.Task| for a given function.
 
+    Generics: ~
+    - `T`, `R`
+
     Parameters: ~
-    - {fun} (`function`)
+    - {fun} (`async fun(...: T ...) -> R ...`)
 
     Returns: ~
-    - (`async.TaskFun`) (See |async.TaskFun|)
+    - (`TaskFun<T,R>`)
 
 ------------------------------------------------------------------------------
 async.await({...})                                             *async.await()*
@@ -195,7 +198,7 @@ async.await({...})                                             *async.await()*
     - `T`, `R`
 
     Overloads: ~
-    - `fun(argc: integer, func: fun(...: T, callback: fun(...: R)), ...: T) -> async.Handle?`
+    - `fun(argc: integer, func: fun(...: T ..., callback: fun(...: R ...)) -> async.Handle?, ...: T ...) -> R ...`
     - `fun(task: Task<R>) -> R ...`
     - `fun(taskfun: TaskFun<R>) -> R ...`
 
@@ -297,7 +300,7 @@ async.iter({tasks})                                             *async.iter()*
     - `async`
 
     Parameters: ~
-    - {tasks} (`async.Task[]`): A list of tasks to wait for and iterate over.
+    - {tasks} (`Task<any>[]`): A list of tasks to wait for and iterate over.
 
     Returns: ~
     - {iterator} (`async fun() -> (integer?,any,unknown)`): that yields the index, error, and results of each task.
@@ -340,7 +343,7 @@ async.join({tasks})                                             *async.join()*
     - `async`
 
     Parameters: ~
-    - {tasks} (`async.Task[]`)
+    - {tasks} (`Task<any>[]`)
 
     Returns: ~
     - (`table<integer,unknown>`)
@@ -351,12 +354,21 @@ async.joinany({tasks})                                       *async.joinany()*
     - `async`
 
     Parameters: ~
-    - {tasks} (`async.Task[]`)
+    - {tasks} (`Task<any>[]`)
 
     Returns: ~
     - {index} (`integer?`)
     - {err} (`any`)
     - {results} (`any ...`)
+
+------------------------------------------------------------------------------
+async.sleep({duration})                                        *async.sleep()*
+    Attributes: ~
+    - `async`
+
+    Parameters: ~
+    - {duration} (`integer`): ms
+
 
 ------------------------------------------------------------------------------
 async.future()                                                *async.future()*
@@ -454,10 +466,6 @@ async.semaphore({permits})                                 *async.semaphore()*
 
     Returns: ~
     - (`async.Semaphore`) (See |async.Semaphore|)
-
-==============================================================================
-*async.CallbackFn*
-    Type: `fun(...: R ...) -> async.Handle?
 
 ==============================================================================
 *async.Event*
@@ -652,7 +660,7 @@ async.Semaphore:with({fn})                            *async.Semaphore:with()*
     - `R`
 
     Parameters: ~
-    - {fn} (`fun() -> R ...`): Function to execute within the semaphore's context.
+    - {fn} (`async fun() -> R ...`): Function to execute within the semaphore's context.
 
     Returns: ~
     - (`R ...`): Result(s) of the executed function.

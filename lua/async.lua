@@ -233,6 +233,20 @@ end
 -- platforms.
 local MAX_TIMEOUT = 2 ^ 31 - 1
 
+--# pwait exists because `pcall+wait` is a bit clumsy.
+--#
+--# ```
+--# task:pwait(timeout)
+--# ```
+--# vs
+--# ```
+--# pcall(task.wait, task, timeout)
+--# -- or
+--# pcall(function()
+--#   task:pwait(timeout)
+--# end)
+--# ```
+
 --- Synchronously wait (protected) for a task to finish (blocking)
 ---
 --- If an error is returned, `Task:traceback()` can be used to get the
@@ -895,6 +909,14 @@ end
 --- @return any ... results
 function M.joinany(tasks)
   return M.iter(tasks)()
+end
+
+--- @async
+--- @param duration integer ms
+function M.sleep(duration)
+  M.await(1, function(callback)
+    vim.defer_fn(callback, duration)
+  end)
 end
 
 do --- future()
