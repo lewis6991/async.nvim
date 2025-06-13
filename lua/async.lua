@@ -562,42 +562,6 @@ function M.wrap(argc, func)
   end
 end
 
--- TODO(lewis6991): this needs more iteration/work
-
---- Use this to create a function which executes in an async context but
---- called from a non-async context.
----
---- The returned function will take the same arguments as the original function.
---- If argc is provided, the function will have an additional callback function
---- as the last argument which will be called when the function completes.
----
---- @generic F: function
---- @param argc integer
---- @param func F
---- @return F
-function M._create(argc, func)
-  assert(type(argc) == 'number')
-  assert(type(func) == 'function')
-
-  --- @param ... any
-  --- @return any ...
-  return function(...)
-    local task = Task._new(func)
-
-    task:raise_on_error()
-
-    --- @type fun(err:string?, ...:any)?
-    local callback = argc and select(argc + 1, ...) or nil
-    if callback and type(callback) == 'function' then
-      task:wait(callback)
-    end
-
-    task:_resume(unpack({ ... }, 1, argc))
-
-    return task
-  end
-end
-
 --- @diagnostic disable-next-line: unnecessary-if
 if vim.schedule then
   --- An async function that when called will yield to the Neovim scheduler to be
