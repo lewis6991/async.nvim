@@ -1,9 +1,7 @@
-local pcall = copcall or pcall
-
 --- Other notes to include:
 ---
 --- - unlike python, async functions do not need to be awaited when within an
---- async context, however Tasks and Task functions do.
+--- async context, however Tasks do.
 
 --- This modules implements an asynchronous programming library for Neovim,
 --- enabling developers to write non-blocking, coroutine-based code. Below is a
@@ -20,8 +18,7 @@ local pcall = copcall or pcall
 --- 3. Awaiting:
 ---    - [async.await()]: Allows blocking on asynchronous operations, such as
 ---      tasks or callback-based functions.
----    - Supports multiple overloads for tasks, task functions, and callback
----      functions.
+---    - Supports overloads for tasks, and callback functions.
 ---
 --- 4. Task Wrapping:
 ---    - [async.wrap()]: Converts any callback-based functions into async functions.
@@ -77,9 +74,8 @@ local pcall = copcall or pcall
 --- Async functions are functions that must run in an [async-context] because
 --- they contain at least one call that interacts with the event loop.
 ---
---- These functions can be executed directly using `async.run()` or wrapped
---- into Task functions via `async.async()`. Both methods ensure the async
---- function runs within an [async-context].
+--- These functions can be executed directly using `async.run()` which funs the
+--- function in an async context.
 ---
 --- Use the `@async` annotation to designate a function as an async function.
 ---
@@ -158,8 +154,7 @@ end
 --- wait on the event loop, the Task suspends the execution of the coroutine and
 --- waits for event loop to restart it.
 ---
---- Use the high-level [async.run()] or [async.async()] functions to create Task
---- or Task functions respectively.
+--- Use the [async.run()] to create Tasks.
 ---
 --- To cancel a running Task use the `close()` method. Calling it will cause the
 --- Task to throw a "Task is closing or closed" error into the wrapped coroutine.
@@ -504,19 +499,6 @@ end
 ---     assert(n == 1 and s == 'a')
 ---   end
 ---
----   do -- await a started task function (new async context)
----     local n, s, arg = async.await(task_fun('A'))
----     assert(n == 2)
----     assert(s == 'b')
----     assert(args == 'A')
----   end
----
----   do -- await a task function (re-using the current async context)
----     local n, s, arg = async.await(task_fun, 'B')
----     assert(n == 2)
----     assert(s == 'b')
----     assert(args == 'B')
----   end
 --- end)
 --- ```
 --- @async
