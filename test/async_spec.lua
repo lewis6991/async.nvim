@@ -24,7 +24,6 @@ describe('async', function()
       _G.await = Async.await
       _G.run = Async.run
       _G.wrap = Async.wrap
-      _G.schedule = Async.schedule
 
       function _G.check_timer(weak)
         assert(weak.timer and weak.timer:is_closing(), 'Timer is not closing')
@@ -186,7 +185,7 @@ describe('async', function()
         weak.timer = timer
         return timer --[[@as async.Closable]]
       end)
-      schedule()
+      await(vim.schedule)
       error('GOT HERE')
     end)
 
@@ -204,7 +203,7 @@ describe('async', function()
         weak.timer = timer
         return timer --[[@as async.Closable]]
       end)
-      schedule()
+      await(vim.schedule)
     end)
 
     task:wait(10)
@@ -237,7 +236,7 @@ describe('async', function()
     for i = 1, 10 do
       tasks[i] = run(function()
         if i % 2 == 0 then
-          schedule()
+          await(vim.schedule)
         end
         return 'FINISH', i
       end)
@@ -276,7 +275,7 @@ describe('async', function()
 
   it_exec('iter tasks followed by error', function()
     local task = run(function()
-      schedule()
+      await(vim.schedule)
       return 'FINISH', 1
     end)
 
@@ -350,7 +349,7 @@ stack traceback:
           tasks[#tasks + 1] = run(function()
             semaphore:with(function()
               ret[#ret + 1] = 'start' .. i
-              schedule()
+              await(vim.schedule)
               ret[#ret + 1] = 'end' .. i
             end)
           end)

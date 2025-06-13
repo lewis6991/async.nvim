@@ -37,7 +37,6 @@ async.join()	lua-async.txt	/*async.join()*
 async.joinany()	lua-async.txt	/*async.joinany()*
 async.queue()	lua-async.txt	/*async.queue()*
 async.run()	lua-async.txt	/*async.run()*
-async.schedule	lua-async.txt	/*async.schedule*
 async.semaphore()	lua-async.txt	/*async.semaphore()*
 async.sleep()	lua-async.txt	/*async.sleep()*
 async.timeout()	lua-async.txt	/*async.timeout()*

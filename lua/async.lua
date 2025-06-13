@@ -562,13 +562,6 @@ function M.wrap(argc, func)
   end
 end
 
---- @diagnostic disable-next-line: unnecessary-if
-if vim.schedule then
-  --- An async function that when called will yield to the Neovim scheduler to be
-  --- able to call the API.
-  M.schedule = M.wrap(1, vim.schedule)
-end
-
 --- Waits for multiple tasks to finish and iterates over their results.
 ---
 --- This function allows you to run multiple asynchronous tasks concurrently and
