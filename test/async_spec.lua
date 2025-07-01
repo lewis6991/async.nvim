@@ -32,7 +32,7 @@ describe('async', function()
       end
 
       function _G.check_task_err(task, pat)
-        local ok, err = pcall(task.wait, task, 10)
+        local ok, err = task:pwait(10)
         assert(not ok and err:match(pat), task:traceback(err))
       end
 
@@ -106,7 +106,7 @@ describe('async', function()
 
         -- prematurely close the timer
         timer:close(callback)
-        return timer --[[@as async.Closable]]
+        return timer --[[@as vim.async.Closable]]
       end)
 
       return 'FINISH'
@@ -124,7 +124,7 @@ describe('async', function()
       -- Never call callback
       local timer = vim.uv.new_timer()
       weak.timer = timer
-      return timer --[[@as async.Closable]]
+      return timer --[[@as vim.async.Closable]]
     end)
 
     local task = run(function()
@@ -146,7 +146,7 @@ describe('async', function()
           -- Never call callback
           local timer = assert(vim.uv.new_timer())
           weak.timer = timer
-          return timer --[[@as async.Closable]]
+          return timer --[[@as vim.async.Closable]]
         end)
       end))
     end)
@@ -165,7 +165,7 @@ describe('async', function()
         -- Never call callback
         local timer = assert(vim.uv.new_timer())
         weak.timer = timer
-        return timer --[[@as async.Closable]]
+        return timer --[[@as vim.async.Closable]]
       end)
     end)
 
@@ -183,7 +183,7 @@ describe('async', function()
         local timer = assert(vim.uv.new_timer())
         timer:start(1, 0, callback)
         weak.timer = timer
-        return timer --[[@as async.Closable]]
+        return timer --[[@as vim.async.Closable]]
       end)
       await(vim.schedule)
       error('GOT HERE')
@@ -201,7 +201,7 @@ describe('async', function()
         local timer = assert(vim.uv.new_timer())
         timer:start(1, 0, callback)
         weak.timer = timer
-        return timer --[[@as async.Closable]]
+        return timer --[[@as vim.async.Closable]]
       end)
       await(vim.schedule)
     end)
@@ -295,6 +295,7 @@ describe('async', function()
   end)
 
   it_exec('can provide a traceback for nested tasks', function()
+    --- @async
     local function t1()
       await(run(function()
         error('GOT HERE')
@@ -322,7 +323,7 @@ describe('async', function()
     -- >         test/async_spec.lua:310: in function <test/async_spec.lua:297>
     -- >         [string "<nvim>"]:2: in main chunk
 
-    local ok, err = pcall(task.wait, task, 1000)
+    local ok, err = task:pwait(1000)
     assert(not ok)
 
     local m = [[test/async_spec.lua:%d+: GOT HERE
@@ -386,7 +387,7 @@ stack traceback:
     local task = run(function()
       coroutine.yield('This will cause an error.')
     end)
-    local ok, res = pcall(task.wait, task, 10)
+    local ok, res = task.pwait(task, 10)
     assert(not ok, 'Expected error, got: ' .. tostring(res))
     assert(res == 'Unexpected coroutine.yield')
   end)
@@ -407,5 +408,51 @@ stack traceback:
       return deep(10000)
     end):wait()
     assert(res == 'done')
+  end)
+
+  it_exec('does not close child tasks created outside', function()
+    local t1 = run(function()
+      Async.sleep(10)
+    end)
+
+    local t2, t3
+
+    local parent = run(function()
+      t2 = run(function()
+        Async.sleep(10)
+      end)
+
+      t3 = run(function()
+        Async.sleep(10)
+      end):detach()
+
+      -- t1 create outside parent, cancellation will not propagate to it
+      await(t1)
+
+      -- t2 created inside parent, cancellation will propagate to it
+      await(t2)
+
+      -- t3 created inside parent, but is detached, cancellation will not
+      -- propagate to it
+      await(t3)
+    end)
+
+    parent:close()
+
+    do
+      local ok, err = parent:pwait()
+      assert(not ok)
+      assert(err == 'closed')
+    end
+
+    t1:wait() -- was not closed
+
+    do
+      local ok, err = t2:pwait()
+      assert(not ok)
+      assert(err == 'closed', err)
+    end
+
+    t3:wait() -- was not closed
   end)
 end)

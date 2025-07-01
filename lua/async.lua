@@ -124,7 +124,7 @@ local threads = setmetatable({}, { __mode = 'k' })
 --- @return vim.async.Task<any>?
 local function running()
   local task = threads[coroutine.running()]
-  if task and not (task._future:completed() or task._closing) then
+  if task and not (task:_completed() or task._closing) then
     return task
   end
 end
@@ -170,10 +170,34 @@ function Task._new(func)
     _future = M.future(),
   }, Task)
 
+  local parent = running()
+
+  if parent then
+    local function on_parent_finish()
+      self:close()
+    end
+    parent:wait(on_parent_finish)
+
+    function self:detach()
+      parent:_unwait(on_parent_finish)
+      return self
+    end
+  end
+
   --- @diagnostic disable-next-line: assign-type-mismatch
   threads[thread] = self
 
   return self
+end
+
+--- @package
+function Task:_unwait(cb)
+  return self._future:_remove_cb(cb)
+end
+
+--- @package
+function Task:_completed()
+  return self._future:completed()
 end
 
 -- Use max 32-bit signed int value to avoid overflow on 32-bit systems.
@@ -219,7 +243,7 @@ function Task:wait(callback_or_timeout)
 
   if
     not vim.wait(callback_or_timeout or MAX_TIMEOUT, function()
-      return self._future:completed()
+      return self:_completed()
     end)
   then
     error('timeout', 2)
@@ -232,6 +256,19 @@ function Task:wait(callback_or_timeout)
   end
 
   return unpack_len(res, 2)
+end
+
+--- @param timeout integer?
+function Task:pwait(timeout)
+  vim.validate('timeout', timeout, 'number', true)
+  return pcall(self.wait, self, timeout)
+end
+
+--- Do not propagate close signal from the parent task.
+--- @return vim.async.Task
+function Task:detach()
+  -- implemented in Task._new
+  return self
 end
 
 --- @private
@@ -293,6 +330,7 @@ function Task:_finish(err, result)
     self._child = nil
   end
   threads[self._thread] = nil
+  self:detach()
   self._future:complete(err, unpack_len(result))
 end
 
@@ -305,13 +343,13 @@ end
 --- @overload fun(callback: fun(closed: boolean))
 function Task:close(callback)
   return M.run(function()
-    if self._future:completed() or self._closing then
+    if self:_completed() or self._closing then
       return false
     end
 
     self._closing = true
 
-    if self._child then
+    if self._child and getmetatable(self._child) ~= Task then
       M.await(1, function(on_child_close)
         self._child:close(on_child_close)
       end)
@@ -626,8 +664,8 @@ function M.iter(tasks)
 
   -- Keep track of the callbacks so we can remove them when the iterator
   -- is garbage collected.
-  --- @type table<vim.async.Future<any>,function>
-  local futs = setmetatable({}, { __mode = 'v' })
+  --- @type table<vim.async.Task<any>,function>
+  local task_cbs = setmetatable({}, { __mode = 'v' })
 
   --- If can_gc_cbs is true, then the iterator function has been garbage
   --- collected and means any awaiters can also be garbage collected. The
@@ -641,8 +679,8 @@ function M.iter(tasks)
   for i, task in ipairs(tasks) do
     local function cb(err, ...)
       if can_gc_cbs then
-        for fut, tcb in pairs(futs) do
-          fut:_remove_cb(tcb)
+        for t, tcb in pairs(task_cbs) do
+          t:_unwait(tcb)
         end
       end
 
@@ -661,7 +699,7 @@ function M.iter(tasks)
       end
     end
 
-    futs[task._future] = cb
+    task_cbs[task] = cb
     task:wait(cb)
   end
 
@@ -772,7 +810,7 @@ end
 do --- future()
   --- Future objects are used to bridge low-level callback-based code with
   --- high-level async/await code.
-  --- @class vim.vim.async.Future<R>
+  --- @class vim.async.Future<R>
   --- @field private _callbacks table<integer,fun(err?: any, ...: R...)>
   --- @field private _callback_pos integer
   --- Error result of the task is an error occurs.
