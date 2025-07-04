@@ -34,6 +34,7 @@ describe('async', function()
       function _G.check_task_err(task, pat)
         local ok, err = task:pwait(10)
         assert(not ok and err:match(pat), task:traceback(err))
+        return err
       end
 
       function _G.eq(expected, actual)
@@ -323,8 +324,7 @@ describe('async', function()
     -- >         test/async_spec.lua:310: in function <test/async_spec.lua:297>
     -- >         [string "<nvim>"]:2: in main chunk
 
-    local ok, err = task:pwait(1000)
-    assert(not ok)
+    local err = check_task_err(task, 'GOT HERE')
 
     local m = [[test/async_spec.lua:%d+: GOT HERE
 stack traceback:
@@ -387,9 +387,7 @@ stack traceback:
     local task = run(function()
       coroutine.yield('This will cause an error.')
     end)
-    local ok, res = task.pwait(task, 10)
-    assert(not ok, 'Expected error, got: ' .. tostring(res))
-    assert(res == 'Unexpected coroutine.yield')
+    check_task_err(task, 'Unexpected coroutine.yield')
   end)
 
   it_exec('does not need new stack frame for non-deferred continuations', function()
@@ -439,20 +437,23 @@ stack traceback:
 
     parent:close()
 
-    do
-      local ok, err = parent:pwait()
-      assert(not ok)
-      assert(err == 'closed')
-    end
-
+    check_task_err(parent, 'closed')
     t1:wait() -- was not closed
-
-    do
-      local ok, err = t2:pwait()
-      assert(not ok)
-      assert(err == 'closed', err)
-    end
-
+    check_task_err(t2, 'closed')
     t3:wait() -- was not closed
+  end)
+
+  it_exec('automatically closes child tasks', function()
+    local child1, child2
+    local main = run(function()
+      child1 = run(Async.sleep, 10)
+      child2 = run(Async.sleep, 10)
+      -- do no await child1 or child2
+    end)
+
+    -- should exit immediately as neither child1 or child2 are awaited
+    main:wait()
+    check_task_err(child1, 'closed')
+    check_task_err(child2, 'closed')
   end)
 end)

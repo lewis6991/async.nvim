@@ -103,6 +103,18 @@
 --- main:close() -- calls `child:close()` but not `t1:close()`
 --- ```
 ---
+--- When a prent task finishes, either successfully or via an error, it will
+--- close all of its children tasks.
+---
+--- ```lua
+--- local main = async.run(function()
+---   local child1 = async.run(function() ... end)
+---   local child2 = async.run(function() ... end)
+---   -- as neither child1 or child2 are awaited, they will be closed
+---   -- when main finishes.
+--- end)
+--- ```
+---
 --- @class vim.async
 local M = {}
 
