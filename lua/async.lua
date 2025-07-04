@@ -82,6 +82,27 @@
 --- To run a Task without waiting for the result while still raising
 --- any errors, use [async.Task:raise_on_error()].
 ---
+--- ### async-task-ownership
+---
+--- Tasks are owned by the async context they are created in.
+---
+--- ```lua
+--- local t1 = async.run(function() ... end)
+---
+--- local main = async.run(function()
+---   local child = async.run(function() ... end)
+---
+---   -- child created in the main async context, owned by main.
+---   -- Calls to `main:close()` will propagate to child.
+---   async.await(child)
+---
+---   -- t1 created outside of the main async context.
+---   async.await(t1)
+--- end)
+---
+--- main:close() -- calls `child:close()` but not `t1:close()`
+--- ```
+---
 --- @class vim.async
 local M = {}
 
@@ -150,6 +171,7 @@ end
 --- @field private _thread thread
 --- @field package _future vim.async.Future<R>
 --- @field package _closing boolean
+--- @field private _detach_from_parent? fun()
 ---
 --- Tasks can await other async functions (task of callback functions)
 --- when we are waiting on a child, we store the handle to it here so we can
@@ -171,14 +193,13 @@ function Task._new(func)
   }, Task)
 
   local parent = running()
-
   if parent then
     local function on_parent_finish()
       self:close()
     end
     parent:wait(on_parent_finish)
 
-    function self:detach()
+    function self:_detach_from_parent()
       parent:_unwait(on_parent_finish)
       return self
     end
@@ -267,6 +288,10 @@ end
 --- Do not propagate close signal from the parent task.
 --- @return vim.async.Task
 function Task:detach()
+  if self._detach_from_parent then
+    self._detach_from_parent()
+    self._detach_from_parent = nil
+  end
   -- implemented in Task._new
   return self
 end
