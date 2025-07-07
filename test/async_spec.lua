@@ -33,7 +33,11 @@ describe('async', function()
 
       function _G.check_task_err(task, pat)
         local ok, err = task:pwait(10)
-        assert(not ok and err:match(pat), task:traceback(err))
+        if ok then
+          error('Expected task to error, but it completed successfully', 2)
+        elseif not err:match(pat) then
+          error(task:traceback(err), 2)
+        end
         return err
       end
 
@@ -265,13 +269,26 @@ describe('async', function()
     assert(a == 'JJ', 'GOT ' .. tostring(a))
   end)
 
-  it_exec('handle errors in wrapped functions', function()
+  it_exec('can handle errors in wrapped functions', function()
     local task = run(function()
       await(function(_callback)
         error('ERROR')
       end)
     end)
     check_task_err(task, 'ERROR')
+  end)
+
+  it_exec('can pcall errors in wrapped functions', function()
+    local task = run(function()
+      return pcall(function()
+        await(function(_callback)
+          error('ERROR', 0)
+        end)
+      end)
+    end)
+    local ok, msg = task:wait()
+    assert(not ok, 'Expected error, got success')
+    eq(msg, 'ERROR')
   end)
 
   it_exec('iter tasks followed by error', function()
@@ -455,5 +472,21 @@ stack traceback:
     main:wait()
     check_task_err(child1, 'closed')
     check_task_err(child2, 'closed')
+  end)
+
+  it_exec('automatically closes suspended child tasks', function()
+    local forever_child
+
+    local main = run(function()
+      forever_child = run(function()
+        while true do
+          Async.sleep(1)
+        end
+      end)
+      Async.sleep(2)
+    end)
+    eq(forever_child:status(), 'suspended')
+    main:wait()
+    check_task_err(forever_child, 'closed')
   end)
 end)

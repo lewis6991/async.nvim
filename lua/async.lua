@@ -284,6 +284,8 @@ function Task:wait(callback_or_timeout)
 
   local res = pack_len(self._future:result())
 
+  assert(self:status() == 'dead' or res[2] == 'Unexpected coroutine.yield')
+
   if not res[1] then
     error(res[2], 2)
   end
@@ -324,7 +326,8 @@ function Task:_traceback(msg, _lvl)
   end
 
   local tblvl = getmetatable(child) == Task and 2 or nil
-  msg = (msg or '') .. debug.traceback(self._thread, '', tblvl):gsub('\n\t', '\n\t' .. thread)
+  msg = (tostring(msg) or '')
+    .. debug.traceback(self._thread, '', tblvl):gsub('\n\t', '\n\t' .. thread)
 
   if _lvl == 0 then
     --- @type string
@@ -358,17 +361,21 @@ function Task:raise_on_error()
 end
 
 --- @private
---- @param err? any
---- @param result? {[integer]: any, n: integer}
-function Task:_finish(err, result)
+--- Should only be called in Task:_resume_co()
+--- @param stat boolean
+--- @param ... any result
+function Task:_finish(stat, ...)
   -- Keep hold of the child tasks so we can use `task:traceback()`
   -- `task:traceback()`
-  if not err or getmetatable(self._child) ~= Task then
+  if stat or getmetatable(self._child) ~= Task then
     self._child = nil
   end
   threads[self._thread] = nil
-  self:detach()
-  self._future:complete(err, unpack_len(result))
+  if stat then
+    self._future:complete(nil, ...)
+  else
+    self._future:complete((...))
+  end
 end
 
 --- Close the task and all of its children.
@@ -387,11 +394,11 @@ function Task:close(callback)
     self._closing = true
 
     if self._child and getmetatable(self._child) ~= Task then
-      M.await(1, function(on_child_close)
+      M.await(function(on_child_close)
         self._child:close(on_child_close)
       end)
     end
-    self:_finish('closed')
+    self:_resume('closed')
     return true
   end):wait(callback)
 end
@@ -407,72 +414,79 @@ end
 --- Internal marker used to identify that a yielded value is an asynchronous yielding.
 local yield_marker = {}
 
+--- @private
+--- @return fun(callback: fun(...:any...): vim.async.Closable?)?
+function Task:_resume_co(stat, ...)
+  if not stat or coroutine.status(self._thread) == 'dead' then
+    -- Coroutine had error or finished
+    return self:_finish(stat, ...)
+  end
+
+  local marker, fn = ...
+
+  if marker ~= yield_marker or not is_callable(fn) then
+    return self:_finish(false, 'Unexpected coroutine.yield')
+  end
+
+  return fn
+end
+
+--- @private
+--- @param awaitable fun(callback: fun(...:any...): vim.async.Closable?)
+function Task:_handle_awaitable(awaitable)
+  local ok, r
+  local settled = false
+  local next_args
+  ok, r = pcall(awaitable, function(...)
+    if settled then
+      -- error here?
+      return
+    end
+    settled = true
+
+    if self:_completed() then
+      return
+    end
+
+    if ok == nil then
+      next_args = pack_len(...)
+    elseif is_closable(r) then
+      -- We must close the closable child before we resume to ensure
+      -- all resources are collected.
+      local cargs = pack_len(...)
+
+      local close_ok, close_err = pcall(r.close, r, function()
+        self:_resume(unpack_len(cargs))
+      end)
+
+      if not close_ok then
+        self:_resume(close_err)
+      end
+    else
+      self:_resume(...)
+    end
+  end)
+
+  if not ok then
+    self:_resume(r)
+  elseif is_closable(r) then
+    self._child = r
+  end
+
+  return next_args
+end
+
 --- @package
---- @param ... any
+--- @param ... any the first argument is the error, except for when the coroutine begins
 function Task:_resume(...)
   local args = pack_len(...)
 
-  while true do
-    --- @diagnostic disable-next-line: assign-type-mismatch
-    --- @type [boolean, string|{}, fun(...:R...): vim.async.Closable?]
-    local ret = pack_len(coroutine.resume(self._thread, unpack_len(args)))
-
-    local stat = ret[1]
-
-    if not stat then
-      -- Coroutine had error
-      return self:_finish(ret[2])
-    elseif coroutine.status(self._thread) == 'dead' then
-      -- Coroutine finished
-      local result = pack_len(unpack_len(ret, 2))
-      return self:_finish(nil, result)
+  while args do
+    local awaitable = self:_resume_co(coroutine.resume(self._thread, unpack_len(args)))
+    if not awaitable then
+      return true
     end
-
-    local marker, fn = ret[2], ret[3]
-
-    if marker ~= yield_marker or not is_callable(fn) then
-      return self:_finish('Unexpected coroutine.yield')
-    end
-
-    local ok, r
-    local settled = false
-    local is_continuation_deferred = true
-    ok, r = pcall(fn, function(...)
-      if settled then
-        -- error here?
-        return
-      end
-      settled = true
-
-      if ok == nil then
-        is_continuation_deferred = false
-        args = pack_len(...)
-      elseif is_closable(r) then
-        -- We must close the closable child before we resume to ensure
-        -- all resources are collected.
-        local cargs = pack_len(...)
-
-        local close_ok, close_err = pcall(r.close, r, function()
-          self:_resume(unpack_len(cargs))
-        end)
-
-        if not close_ok then
-          self:_finish(close_err)
-        end
-      else
-        self:_resume(...)
-      end
-    end)
-
-    if not ok then
-      self:_finish(r)
-    elseif is_closable(r) then
-      self._child = r
-    end
-
-    if is_continuation_deferred then
-      break
-    end
+    args = self:_handle_awaitable(awaitable)
   end
 end
 
@@ -512,52 +526,42 @@ function M.run(func, ...)
   return task
 end
 
+--- @generic T, R
+--- @param argc integer
+--- @param fun fun(...: T, callback: fun(...: R...))
+--- @param ... any func arguments
+--- @return fun(callback: fun(...: R...))
+local function norm_cb_fun(argc, fun, ...)
+  local args = pack_len(...)
+
+  --- @param callback fun(...:any)
+  --- @return any?
+  return function(callback)
+    args[argc] = function(...)
+      callback(nil, ...)
+    end
+    args.n = math.max(args.n, argc)
+    return fun(unpack_len(args))
+  end
+end
+
+--- @generic T
+--- @param err? any
+--- @param ... T...
+--- @return T...
+local function check(err, ...)
+  if err then
+    error(err, 0)
+  end
+  return ...
+end
+
 --- @async
 --- @generic R
 --- @param fun fun(...:R...): vim.async.Closable?
 --- @return R...
 local function yield(fun)
-  assert(type(fun) == 'function', 'Expected function')
   return coroutine.yield(yield_marker, fun)
-end
-
---- @async
---- @param task vim.async.Task
---- @return any ...
-local function await_task(task)
-  --- @param callback fun(err?: string, ...: any)
-  local res = pack_len(yield(function(callback)
-    task:wait(callback)
-    return task
-  end))
-
-  local err = res[1]
-
-  if err then
-    -- TODO(lewis6991): what is the correct level to pass?
-    error(err, 0)
-  end
-
-  return unpack_len(res, 2)
-end
-
---- Asynchronous blocking wait
---- @async
---- @generic T, R
---- @param argc integer
---- @param fun fun(...: T, callback: fun(...: R))
---- @param ... any func arguments
---- @return any ...
-local function await_cbfun(argc, fun, ...)
-  local args = pack_len(...)
-
-  --- @param callback fun(...:any)
-  --- @return any?
-  return yield(function(callback)
-    args[argc] = callback
-    args.n = math.max(args.n, argc)
-    return fun(unpack_len(args))
-  end)
 end
 
 --- Asynchronous blocking wait
@@ -600,13 +604,15 @@ function M.await(...)
   local arg1 = select(1, ...)
 
   if type(arg1) == 'number' then
-    return await_cbfun(...)
+    return check(yield(norm_cb_fun(...)))
   elseif type(arg1) == 'function' then
-    return await_cbfun(1, arg1)
+    return check(yield(norm_cb_fun(1, arg1)))
   elseif getmetatable(arg1) == Task then
-    return await_task(...)
+    return check(yield(function(callback)
+      arg1:wait(callback)
+      return arg1
+    end))
   end
-
   error('Invalid arguments, expected Task or (argc, func) got: ' .. vim.inspect(arg1), 2)
 end
 
@@ -990,7 +996,7 @@ do --- event()
   --- another task calls set().
   --- @async
   function Event:wait()
-    M.await(1, function(callback)
+    M.await(function(callback)
       if self._is_set then
         callback()
       else
@@ -1082,6 +1088,7 @@ do --- queue()
     if self:size() == 0 then
       error('Queue is empty', 2)
     end
+    -- TODO(lewis6991): For a long_running queue, _left_i might overflow.
     self._left_i = self._left_i + 1
     local item = self._items[self._left_i]
     self._items[self._left_i] = nil
@@ -1156,7 +1163,7 @@ do --- semaphore()
   --- automatically acquires and releases the semaphore around a function call.
   --- @class vim.async.Semaphore
   --- @field private _permits integer
-  --- @field private _queue table<integer, thread>
+  --- @field private _max_permits integer
   --- @field package _event vim.async.Event
   local Semaphore = {}
   Semaphore.__index = Semaphore
@@ -1198,6 +1205,9 @@ do --- semaphore()
   --- Increments the internal counter by `1`. Can wake
   --- up a task waiting to acquire the semaphore.
   function Semaphore:release()
+    if self._permits >= self._max_permits then
+      error('Semaphore value is greater than max permits', 2)
+    end
     self._permits = self._permits + 1
     self._event:set(1)
   end
@@ -1226,12 +1236,13 @@ do --- semaphore()
   ---   assert(value <= 2)
   --- end)
   --- ```
-  --- @param permits integer
+  --- @param permits? integer (default: 1)
   --- @return vim.async.Semaphore
   function M.semaphore(permits)
+    permits = permits or 1
     local obj = setmetatable({
-      _permits = permits or 1,
-      _queue = {},
+      _max_permits = permits,
+      _permits = permits,
       _event = M.event(),
     }, Semaphore)
     obj._event:set()
