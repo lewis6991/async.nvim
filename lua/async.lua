@@ -180,7 +180,7 @@ end
 --- -- coroutine is awaiting on a Future object during cancellation, the Future
 --- -- object will be cancelled.
 --- @class vim.async.Task<R>: vim.async.Closable
---- @field private _thread thread
+--- @field package _thread thread
 --- @field package _future vim.async.Future<R>
 --- @field package _closing boolean
 --- @field private _detach_from_parent? fun()
@@ -188,7 +188,7 @@ end
 --- Tasks can await other async functions (task of callback functions)
 --- when we are waiting on a child, we store the handle to it here so we can
 --- cancel it.
---- @field private _child? vim.async.Task|vim.async.Closable
+--- @field package _child? vim.async.Task|vim.async.Closable
 local Task = {}
 Task.__index = Task
 
@@ -310,26 +310,28 @@ function Task:detach()
   return self
 end
 
---- @private
+--- Get the traceback of a task when it is not active.
+--- Will also get the traceback of nested tasks.
+---
 --- @param msg? string
---- @param _lvl? integer
---- @return string
-function Task:_traceback(msg, _lvl)
-  _lvl = _lvl or 0
+--- @param level? integer
+--- @return string traceback
+function Task:traceback(msg, level)
+  level = level or 0
 
   local thread = ('[%s] '):format(self._thread)
 
   local child = self._child
   if getmetatable(child) == Task then
     --- @cast child vim.async.Task
-    msg = child:_traceback(msg, _lvl + 1)
+    msg = child:traceback(msg, level + 1)
   end
 
   local tblvl = getmetatable(child) == Task and 2 or nil
   msg = (tostring(msg) or '')
     .. debug.traceback(self._thread, '', tblvl):gsub('\n\t', '\n\t' .. thread)
 
-  if _lvl == 0 then
+  if level == 0 then
     --- @type string
     msg = msg
       :gsub('\nstack traceback:\n', '\nSTACK TRACEBACK:\n', 1)
@@ -340,42 +342,15 @@ function Task:_traceback(msg, _lvl)
   return msg
 end
 
---- Get the traceback of a task when it is not active.
---- Will also get the traceback of nested tasks.
----
---- @param msg? string
---- @return string traceback
-function Task:traceback(msg)
-  return self:_traceback(msg)
-end
-
 --- If a task completes with an error, raise the error
 --- @return vim.async.Task self
 function Task:raise_on_error()
   self:wait(function(err)
     if err then
-      error(self:_traceback(err), 0)
+      error(self:traceback(err), 0)
     end
   end)
   return self
-end
-
---- @private
---- Should only be called in Task:_resume_co()
---- @param stat boolean
---- @param ... any result
-function Task:_finish(stat, ...)
-  -- Keep hold of the child tasks so we can use `task:traceback()`
-  -- `task:traceback()`
-  if stat or getmetatable(self._child) ~= Task then
-    self._child = nil
-  end
-  threads[self._thread] = nil
-  if stat then
-    self._future:complete(nil, ...)
-  else
-    self._future:complete((...))
-  end
 end
 
 --- Close the task and all of its children.
@@ -414,79 +389,100 @@ end
 --- Internal marker used to identify that a yielded value is an asynchronous yielding.
 local yield_marker = {}
 
---- @private
---- @return fun(callback: fun(...:any...): vim.async.Closable?)?
-function Task:_resume_co(stat, ...)
-  if not stat or coroutine.status(self._thread) == 'dead' then
-    -- Coroutine had error or finished
-    return self:_finish(stat, ...)
-  end
-
-  local marker, fn = ...
-
-  if marker ~= yield_marker or not is_callable(fn) then
-    return self:_finish(false, 'Unexpected coroutine.yield')
-  end
-
-  return fn
-end
-
---- @private
---- @param awaitable fun(callback: fun(...:any...): vim.async.Closable?)
-function Task:_handle_awaitable(awaitable)
-  local ok, r
-  local settled = false
-  local next_args
-  ok, r = pcall(awaitable, function(...)
-    if settled then
-      -- error here?
-      return
+do -- Task:_resume()
+  --- Should only be called in Task:_resume_co()
+  --- @param task vim.async.Task
+  --- @param stat boolean
+  --- @param ... any result
+  local function finish(task, stat, ...)
+    -- Keep hold of the child tasks so we can use `task:traceback()`
+    -- `task:traceback()`
+    if stat or getmetatable(task._child) ~= Task then
+      task._child = nil
     end
-    settled = true
-
-    if self:_completed() then
-      return
-    end
-
-    if ok == nil then
-      next_args = pack_len(...)
-    elseif is_closable(r) then
-      -- We must close the closable child before we resume to ensure
-      -- all resources are collected.
-      local cargs = pack_len(...)
-
-      local close_ok, close_err = pcall(r.close, r, function()
-        self:_resume(unpack_len(cargs))
-      end)
-
-      if not close_ok then
-        self:_resume(close_err)
-      end
+    threads[task._thread] = nil
+    if stat then
+      task._future:complete(nil, ...)
     else
-      self:_resume(...)
+      task._future:complete((...))
     end
-  end)
-
-  if not ok then
-    self:_resume(r)
-  elseif is_closable(r) then
-    self._child = r
   end
 
-  return next_args
-end
-
---- @package
---- @param ... any the first argument is the error, except for when the coroutine begins
-function Task:_resume(...)
-  local args = pack_len(...)
-
-  while args do
-    local awaitable = self:_resume_co(coroutine.resume(self._thread, unpack_len(args)))
-    if not awaitable then
-      return true
+  --- @private
+  --- @param task vim.async.Task
+  --- @return fun(callback: fun(...:any...): vim.async.Closable?)?
+  local function resume_co(task, stat, ...)
+    if not stat or coroutine.status(task._thread) == 'dead' then
+      -- Coroutine had error or finished
+      return finish(task, stat, ...)
     end
-    args = self:_handle_awaitable(awaitable)
+
+    local marker, fn = ...
+
+    if marker ~= yield_marker or not is_callable(fn) then
+      return finish(task, false, 'Unexpected coroutine.yield')
+    end
+
+    return fn
+  end
+
+  --- @param task vim.async.Task
+  --- @param awaitable fun(callback: fun(...:any...): vim.async.Closable?)
+  local function handle_awaitable(task, awaitable)
+    local ok, r
+    local settled = false
+    local next_args
+    ok, r = pcall(awaitable, function(...)
+      if settled then
+        -- error here?
+        return
+      end
+      settled = true
+
+      if task:_completed() then
+        return
+      end
+
+      if ok == nil then
+        next_args = pack_len(...)
+      elseif is_closable(r) then
+        -- We must close the closable child before we resume to ensure
+        -- all resources are collected.
+        local cargs = pack_len(...)
+
+        local close_ok, close_err = pcall(r.close, r, function()
+          task:_resume(unpack_len(cargs))
+        end)
+
+        if not close_ok then
+          task:_resume(close_err)
+        end
+      else
+        task:_resume(...)
+      end
+    end)
+
+    if not ok then
+      task:_resume(r)
+    elseif is_closable(r) then
+      task._child = r
+    end
+
+    return next_args
+  end
+
+  --- @package
+  --- @param ... any the first argument is the error, except for when the coroutine begins
+  function Task:_resume(...)
+    local args = pack_len(...)
+
+    while args do
+      local awaitable = resume_co(self, coroutine.resume(self._thread, unpack_len(args)))
+      if not awaitable then
+        return true
+      end
+      args = handle_awaitable(self, awaitable)
+    end
   end
 end
 
@@ -526,94 +522,92 @@ function M.run(func, ...)
   return task
 end
 
---- @generic T, R
---- @param argc integer
---- @param fun fun(...: T, callback: fun(...: R...))
---- @param ... any func arguments
---- @return fun(callback: fun(...: R...))
-local function norm_cb_fun(argc, fun, ...)
-  local args = pack_len(...)
+do -- M.await()
+  --- @generic T, R
+  --- @param argc integer
+  --- @param fun fun(...: T, callback: fun(...: R...))
+  --- @param ... any func arguments
+  --- @return fun(callback: fun(...: R...))
+  local function norm_cb_fun(argc, fun, ...)
+    local args = pack_len(...)
 
-  --- @param callback fun(...:any)
-  --- @return any?
-  return function(callback)
-    args[argc] = function(...)
-      callback(nil, ...)
+    --- @param callback fun(...:any)
+    --- @return any?
+    return function(callback)
+      args[argc] = function(...)
+        callback(nil, ...)
+      end
+      args.n = math.max(args.n, argc)
+      return fun(unpack_len(args))
     end
-    args.n = math.max(args.n, argc)
-    return fun(unpack_len(args))
   end
-end
 
---- @generic T
---- @param err? any
---- @param ... T...
---- @return T...
-local function check(err, ...)
-  if err then
-    error(err, 0)
+  --- @generic T
+  --- @param err? any
+  --- @param ... T...
+  --- @return T...
+  local function check(err, ...)
+    if err then
+      error(err, 0)
+    end
+    return ...
   end
-  return ...
-end
 
---- @async
---- @generic R
---- @param fun fun(...:R...): vim.async.Closable?
---- @return R...
-local function yield(fun)
-  return coroutine.yield(yield_marker, fun)
-end
+  --- Asynchronous blocking wait
+  ---
+  --- Example:
+  --- ```lua
+  --- local task = vim.async.run(function()
+  ---    return 1, 'a'
+  --- end)
+  ---
+  --- local task_fun = vim.async.async(function(arg)
+  ---    return 2, 'b', arg
+  --- end)
+  ---
+  --- vim.async.run(function()
+  ---   do -- await a callback function
+  ---     vim.async.await(1, vim.schedule)
+  ---   end
+  ---
+  ---   do -- await a callback function (if function only has a callback argument)
+  ---     vim.async.await(vim.schedule)
+  ---   end
+  ---
+  ---   do -- await a task (new async context)
+  ---     local n, s = vim.async.await(task)
+  ---     assert(n == 1 and s == 'a')
+  ---   end
+  ---
+  --- end)
+  --- ```
+  --- @async
+  --- @generic T, R
+  --- @param ... any see overloads
+  --- @overload fun(func: (fun(callback: fun(...:R...)): vim.async.Closable?)): R...
+  --- @overload fun(argc: integer, func: (fun(...:T..., callback: fun(...:R...)): vim.async.Closable?), ...:T...): R...
+  --- @overload fun(task: vim.async.Task<R>): R...
+  function M.await(...)
+    assert(running(), 'Not in async context')
 
---- Asynchronous blocking wait
----
---- Example:
---- ```lua
---- local task = vim.async.run(function()
----    return 1, 'a'
---- end)
----
---- local task_fun = vim.async.async(function(arg)
----    return 2, 'b', arg
---- end)
----
---- vim.async.run(function()
----   do -- await a callback function
----     vim.async.await(1, vim.schedule)
----   end
----
----   do -- await a callback function (if function only has a callback argument)
----     vim.async.await(vim.schedule)
----   end
----
----   do -- await a task (new async context)
----     local n, s = vim.async.await(task)
----     assert(n == 1 and s == 'a')
----   end
----
---- end)
---- ```
---- @async
---- @generic T, R
---- @param ... any see overloads
---- @overload fun(func: (fun(callback: fun(...:R...)): vim.async.Closable?)): R...
---- @overload fun(argc: integer, func: (fun(...:T..., callback: fun(...:R...)): vim.async.Closable?), ...:T...): R...
---- @overload fun(task: vim.async.Task<R>): R...
-function M.await(...)
-  assert(running(), 'Not in async context')
+    local arg1 = select(1, ...)
 
-  local arg1 = select(1, ...)
+    local fn --- @type fun(...:R...): vim.async.Closable?
+    if type(arg1) == 'number' then
+      fn = norm_cb_fun(...)
+    elseif type(arg1) == 'function' then
+      fn = norm_cb_fun(1, arg1)
+    elseif getmetatable(arg1) == Task then
+      fn = function(callback)
+        arg1:wait(callback)
+        return arg1
+      end
+    else
+      error('Invalid arguments, expected Task or (argc, func) got: ' .. vim.inspect(arg1), 2)
+    end
 
-  if type(arg1) == 'number' then
-    return check(yield(norm_cb_fun(...)))
-  elseif type(arg1) == 'function' then
-    return check(yield(norm_cb_fun(1, arg1)))
-  elseif getmetatable(arg1) == Task then
-    return check(yield(function(callback)
-      arg1:wait(callback)
-      return arg1
-    end))
+    return check(coroutine.yield(yield_marker, fn))
   end
-  error('Invalid arguments, expected Task or (argc, func) got: ' .. vim.inspect(arg1), 2)
 end
 
 --- Creates an async function with a callback style function.

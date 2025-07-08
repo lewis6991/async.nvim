@@ -489,4 +489,68 @@ stack traceback:
     main:wait()
     check_task_err(forever_child, 'closed')
   end)
+
+  -- it_exec_multi('ping pong', function()
+  --   --- @async
+  --   --- @param fn async fun()
+  --   local function catch_closed(fn)
+  --     local ok, err1 = xpcall(fn, function(err)
+  --       if err == 'closed' then
+  --         return err
+  --       end
+  --       return debug.traceback(err, 2)
+  --     end)
+  --     if not ok then
+  --       if err1 == 'closed' then
+  --         return true
+  --       end
+  --       error(err1)
+  --     end
+  --     return false
+  --   end
+  --
+  --   local msgs = {}
+  --
+  --   --- @async
+  --   --- @param sem vim.async.Semaphore
+  --   local function player(name, ball, sem)
+  --     while true do
+  --       -- if catch_closed(function()
+  --       sem:acquire()
+  --       -- end) then
+  --       --   print(("%s: table's gone"):format(name))
+  --       --   break
+  --       -- end
+  --       ball.hits = ball.hits + 1
+  --       msgs[#msgs + 1] = name
+  --       Async.sleep(2)
+  --       sem:release()
+  --     end
+  --   end
+  --
+  --   local ball = { hits = 0 }
+  --   local p1, p2
+  --
+  --   --- @async
+  --   local function pingPong()
+  --     local sem = Async.semaphore()
+  --     sem:acquire()
+  --
+  --     p1 = run('ping', player, 'ping', ball, sem)
+  --     p2 = run('pong', player, 'pong', ball, sem)
+  --
+  --     sem:release()
+  --     Async.sleep(22)
+  --     -- while ball.hits < 10 do
+  --     --   Async.sleep(1)
+  --     -- end
+  --   end
+  --
+  --   local p = run('main', pingPong)
+  --   p:wait(50)
+  --   check_task_err(p1, 'closed')
+  --   check_task_err(p2, 'closed')
+  --
+  --   -- eq(msgs, { 'ping', 'pong', 'ping', 'pong', 'ping', 'pong', 'ping', 'pong', 'ping', 'pong' })
+  -- end)
 end)
