@@ -516,6 +516,7 @@ end
 --- @param ... T... Arguments to pass to the function
 --- @return vim.async.Task<R>
 function M.run(func, ...)
+  -- TODO(lewis6991): add task names
   local task = Task._new(func)
   task:_resume(...)
   return task
@@ -690,6 +691,7 @@ end
 --- @param tasks vim.async.Task<any>[] A list of tasks to wait for and iterate over.
 --- @return async fun(): (integer?, any?, ...any) iterator that yields the index, error, and results of each task.
 function M.iter(tasks)
+  -- TODO(lewis6991): do not return err, instead raise any errors as they occur
   assert(running(), 'Not in async context')
 
   local results = {} --- @type [integer, any, ...any][]
@@ -823,6 +825,7 @@ end
 --- @param duration integer ms
 function M.sleep(duration)
   M.await(1, function(callback)
+    -- TODO(lewis6991): should return the result of defer_fn here.
     vim.defer_fn(callback, duration)
   end)
 end
@@ -896,7 +899,7 @@ do --- M.future()
   --- called immediately with the results.
   --- @param callback fun(err?: any, ...: any)
   function Future:wait(callback)
-    if self:completed() then -- TODO(lewis6991): test
+    if self:completed() then
       -- Already finished or closed
       callback(self._err, unpack_len(self._result))
     else
