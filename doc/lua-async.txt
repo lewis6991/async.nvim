@@ -242,10 +242,11 @@ vim.async.iter({tasks})                                     *vim.async.iter()*
 
     This function allows you to run multiple asynchronous tasks concurrently and
     process their results as they complete. It returns an iterator function that
-    yields the index of the task, any error encountered, and the results of the task.
+    yields the index of the task, any error encountered, and the results of the
+    task.
 
-    If a task completes with an error, the error is returned as the second value.
-    Otherwise, the results of the task are returned as subsequent values.
+    If a task completes with an error, the error is returned as the second
+    value. Otherwise, the results of the task are returned as subsequent values.
 
     Example:
     >lua
@@ -469,7 +470,7 @@ vim.async.semaphore({permits})                         *vim.async.semaphore()*
 <
 
     Parameters: ~
-    - {permits} (`integer`)
+    - {permits} (`integer?`): (default: 1)
 
     Returns: ~
     - (`vim.async.Semaphore`) (See |vim.async.Semaphore|)
@@ -697,10 +698,9 @@ waits for event loop to restart it.
 Use the |vim.async.run()| to create Tasks.
 
 To cancel a running Task use the `close()` method. Calling it will cause the
-Task to throw a "Task is closing or closed" error into the wrapped coroutine.
+Task to throw a "closed" error in the wrapped coroutine.
 
 Note a Task can be waited on via more than one waiter.
-
 
 ------------------------------------------------------------------------------
 vim.async.Task:wait({callback_or_timeout})             *vim.async.Task:wait()*
@@ -751,13 +751,14 @@ vim.async.Task:detach()                              *vim.async.Task:detach()*
     - (`vim.async.Task`) (See |vim.async.Task|)
 
 ------------------------------------------------------------------------------
-vim.async.Task:traceback({msg})                   *vim.async.Task:traceback()*
+vim.async.Task:traceback({msg}, {level})          *vim.async.Task:traceback()*
 
     Get the traceback of a task when it is not active.
     Will also get the traceback of nested tasks.
 
     Parameters: ~
     - {msg} (`string?`)
+    - {level} (`integer?`)
 
     Returns: ~
     - {traceback} (`string`)
