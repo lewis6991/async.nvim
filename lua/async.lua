@@ -201,12 +201,21 @@ end
 --- @field package _thread thread
 --- @field package _future vim.async.Future<R>
 --- @field package _closing boolean
---- @field private _detach_from_parent? fun()
+---
+--- Reference to parent to handle attaching/detaching.
+--- @field package _parent? vim.async.Task<any>
+--- @field package _parent_children_idx? integer
+---
+--- Maintain children as an array to preserve closure order.
+--- @field package _children table<integer, vim.async.Task<any>?>
+---
+--- Pointer to last child in children
+--- @field package _children_idx integer
 ---
 --- Tasks can await other async functions (task of callback functions)
 --- when we are waiting on a child, we store the handle to it here so we can
 --- cancel it.
---- @field package _child? vim.async.Task|vim.async.Closable
+--- @field package _awaiting? vim.async.Task|vim.async.Closable
 local Task = {}
 
 do --- Task
@@ -221,22 +230,12 @@ do --- Task
       _closing = false,
       _thread = thread,
       _future = M.future(),
+      _children = {},
+      _children_idx = 0,
     }, Task)
 
-    local parent = running()
-    if parent then
-      local function on_parent_finish()
-        self:close()
-      end
-      parent:wait(on_parent_finish)
+    self:_attach(running())
 
-      function self:_detach_from_parent()
-        parent:_unwait(on_parent_finish)
-        return self
-      end
-    end
-
-    --- @diagnostic disable-next-line: assign-type-mismatch
     threads[thread] = self
 
     return self
@@ -308,14 +307,27 @@ do --- Task
     return pcall(self.wait, self, timeout)
   end
 
-  --- Do not propagate close signal from the parent task.
+  --- @private
+  --- @param parent? vim.async.Task
+  function Task:_attach(parent)
+    if parent then
+      -- Attach to parent
+      parent._children_idx = parent._children_idx + 1
+      parent._children[parent._children_idx] = self
+
+      -- Keep track of the parent and this tasks index so we can detach
+      self._parent = parent
+      self._parent_children_idx = parent._children_idx
+    end
+  end
+
   --- @return vim.async.Task
   function Task:detach()
-    if self._detach_from_parent then
-      self._detach_from_parent()
-      self._detach_from_parent = nil
+    if self._parent then
+      self._parent._children[self._parent_children_idx] = nil
+      self._parent = nil
+      self._parent_children_idx = nil
     end
-    -- implemented in Task._new
     return self
   end
 
@@ -330,13 +342,13 @@ do --- Task
 
     local thread = ('[%s] '):format(self._thread)
 
-    local child = self._child
-    if getmetatable(child) == Task then
-      --- @cast child vim.async.Task
-      msg = child:traceback(msg, level + 1)
+    local awaiting = self._awaiting
+    if getmetatable(awaiting) == Task then
+      --- @cast awaiting vim.async.Task
+      msg = awaiting:traceback(msg, level + 1)
     end
 
-    local tblvl = getmetatable(child) == Task and 2 or nil
+    local tblvl = getmetatable(awaiting) == Task and 2 or nil
     msg = (tostring(msg) or '')
       .. debug.traceback(self._thread, '', tblvl):gsub('\n\t', '\n\t' .. thread)
 
@@ -377,11 +389,12 @@ do --- Task
 
       self._closing = true
 
-      if self._child and getmetatable(self._child) ~= Task then
+      if self._awaiting and getmetatable(self._awaiting) ~= Task then
         M.await(function(on_child_close)
-          self._child:close(on_child_close)
+          self._awaiting:close(on_child_close)
         end)
       end
+      -- propagate close signal to children
       self:_resume('closed')
       return true
     end):wait(callback)
@@ -395,14 +408,25 @@ do --- Task
     local function finish(task, stat, ...)
       -- Keep hold of the child tasks so we can use `task:traceback()`
       -- `task:traceback()`
-      if stat or getmetatable(task._child) ~= Task then
-        task._child = nil
+      if stat or getmetatable(task._awaiting) ~= Task then
+        task._awaiting = nil
       end
+
+      local has_children = next(task._children) ~= nil
+      for _, child in pairs(task._children) do
+        child:close()
+      end
+
+      task:detach()
+
       threads[task._thread] = nil
-      if stat then
-        task._future:complete(nil, ...)
-      else
+
+      if not stat then
         task._future:complete((...))
+      elseif has_children then
+        task._future:complete('uncompleted children')
+      elseif stat then
+        task._future:complete(nil, ...)
       end
     end
 
@@ -463,7 +487,7 @@ do --- Task
       if not ok then
         task:_resume(r)
       elseif is_closable(r) then
-        task._child = r
+        task._awaiting = r
       end
 
       return next_args
@@ -472,6 +496,7 @@ do --- Task
     --- @package
     --- @param ... any the first argument is the error, except for when the coroutine begins
     function Task:_resume(...)
+      --- @type {[integer]: any, n: integer}?
       local args = pack_len(...)
 
       while args do
