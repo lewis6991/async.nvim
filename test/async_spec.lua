@@ -24,11 +24,15 @@ describe('async', function()
       _G.await = Async.await
       _G.run = Async.run
       _G.wrap = Async.wrap
+      _G.uv_handles = setmetatable({}, { __mode = 'v' })
 
-      function _G.check_timer(weak)
-        assert(weak.timer and weak.timer:is_closing(), 'Timer is not closing')
-        collectgarbage('collect')
-        assert(not next(weak), 'Resources not collected')
+      --- @generic T
+      --- @param name string
+      --- @param handle T?
+      --- @return T - ?
+      function _G.add_handle(name, handle)
+        uv_handles[name] = assert(handle)
+        return handle
       end
 
       function _G.check_task_err(task, pat)
@@ -50,64 +54,57 @@ describe('async', function()
     end)
   end)
 
+  after_each(function()
+    exec_lua(function()
+      for k, v in pairs(uv_handles) do
+        assert(v:is_closing(), ('uv handle %s is not closing'):format(k))
+      end
+      collectgarbage('collect')
+      assert(not next(uv_handles), 'Resources not collected')
+    end)
+  end)
+
   it_exec('can await a uv callback function', function()
-    local weak = setmetatable({}, { __mode = 'v' })
-
-    local done = false
-
     --- @param path string
     --- @param options uv.spawn.options
     --- @param on_exit fun(code: integer, signal: integer)
     --- @return uv.uv_process_t handle
     local function spawn(path, options, on_exit)
-      local obj = vim.uv.spawn(path, options, on_exit)
-      table.insert(weak, obj)
-      return obj
+      return add_handle('process', vim.uv.spawn(path, options, on_exit))
     end
 
-    run(function()
+    local done = run(function()
       local code1 = await(3, spawn, 'echo', { args = { 'foo' } })
       assert(code1 == 0)
 
       local code2 = await(3, spawn, 'echo', { args = { 'bar' } })
       assert(code2 == 0)
+      await(vim.schedule)
 
-      done = true
+      return true --[[@as boolean]]
     end):wait(1000)
 
     assert(done)
-
-    collectgarbage('collect')
-    assert(not next(weak), 'Resources not collected')
   end)
 
   it_exec('callback function can be closed', function()
-    local weak = setmetatable({}, { __mode = 'v' })
-
     local task = run(function()
       await(1, function(_callback)
         -- Never call callback
-        local timer = vim.uv.new_timer()
-        weak.timer = timer
-        return timer --[[@as async.Closable]]
+        return add_handle('timer', vim.uv.new_timer()) --[[@as vim.async.Closable]]
       end)
     end)
 
     task:close()
 
     check_task_err(task, 'closed')
-    check_timer(weak)
   end)
 
   it_exec('callback function can be double closed', function()
-    --- @type { timer: uv.uv_timer_t? }
-    local weak = setmetatable({}, { __mode = 'v' })
-
     local task = run(function()
       await(1, function(callback)
         -- Never call callback
-        local timer = assert(vim.uv.new_timer())
-        weak.timer = timer
+        local timer = add_handle('timer', vim.uv.new_timer())
 
         -- prematurely close the timer
         timer:close(callback)
@@ -118,18 +115,13 @@ describe('async', function()
     end)
 
     check_task_err(task, 'handle .* is already closing')
-    check_timer(weak)
   end)
 
   -- Same as test above but uses async and wrap
   it_exec('callback function can be closed (2)', function()
-    local weak = setmetatable({}, { __mode = 'v' })
-
     local wfn = wrap(1, function(_callback)
       -- Never call callback
-      local timer = vim.uv.new_timer()
-      weak.timer = timer
-      return timer --[[@as vim.async.Closable]]
+      return add_handle('timer', vim.uv.new_timer()) --[[@as vim.async.Closable]]
     end)
 
     local task = run(function()
@@ -139,19 +131,14 @@ describe('async', function()
     task:close()
 
     check_task_err(task, 'closed')
-    check_timer(weak)
   end)
 
   it_exec('callback function can be closed (nested)', function()
-    local weak = setmetatable({}, { __mode = 'v' })
-
     local task = run(function()
       await(run(function()
         await(function(_callback)
           -- Never call callback
-          local timer = assert(vim.uv.new_timer())
-          weak.timer = timer
-          return timer --[[@as vim.async.Closable]]
+          return add_handle('timer', vim.uv.new_timer()) --[[@as vim.async.Closable]]
         end)
       end))
     end)
@@ -159,35 +146,26 @@ describe('async', function()
     task:close()
 
     check_task_err(task, 'closed')
-    check_timer(weak)
   end)
 
   it_exec('can timeout tasks', function()
-    local weak = setmetatable({}, { __mode = 'v' })
-
     local task = run(function()
       await(function(_callback)
         -- Never call callback
-        local timer = assert(vim.uv.new_timer())
-        weak.timer = timer
-        return timer --[[@as vim.async.Closable]]
+        return add_handle('timer', vim.uv.new_timer()) --[[@as vim.async.Closable]]
       end)
     end)
 
     check_task_err(task, 'timeout')
     task:close()
     check_task_err(task, 'closed')
-    check_timer(weak)
   end)
 
   it_exec('handle tasks that error', function()
-    local weak = setmetatable({}, { __mode = 'v' })
-
     local task = run(function()
       await(function(callback)
-        local timer = assert(vim.uv.new_timer())
+        local timer = add_handle('timer', vim.uv.new_timer())
         timer:start(1, 0, callback)
-        weak.timer = timer
         return timer --[[@as vim.async.Closable]]
       end)
       await(vim.schedule)
@@ -195,24 +173,19 @@ describe('async', function()
     end)
 
     check_task_err(task, 'GOT HERE')
-    check_timer(weak)
   end)
 
   it_exec('handle tasks that complete', function()
-    local weak = setmetatable({}, { __mode = 'v' })
-
     local task = run(function()
       await(function(callback)
-        local timer = assert(vim.uv.new_timer())
+        local timer = add_handle('timer', vim.uv.new_timer())
         timer:start(1, 0, callback)
-        weak.timer = timer
         return timer --[[@as vim.async.Closable]]
       end)
       await(vim.schedule)
     end)
 
     task:wait(10)
-    check_timer(weak)
   end)
 
   it_exec('can wait on an empty task', function()
@@ -234,7 +207,7 @@ describe('async', function()
   end)
 
   it_exec('can iterate tasks', function()
-    local tasks = {} --- @type async.Task<any>[]
+    local tasks = {} --- @type vim.async.Task<any>[]
 
     local expected = {} --- @type table[]
 
@@ -362,7 +335,7 @@ stack traceback:
       local ret = {}
       run(function()
         local semaphore = Async.semaphore(3)
-        local tasks = {} --- @type async.Task<nil>[]
+        local tasks = {} --- @type vim.async.Task<nil>[]
         for i = 1, 5 do
           tasks[#tasks + 1] = run(function()
             semaphore:with(function()
@@ -425,12 +398,13 @@ stack traceback:
     assert(res == 'done')
   end)
 
-  it_exec('does not close child tasks created outside', function()
+  it_exec('does not close child tasks created outside of parent', function()
     local t1 = run(function()
       Async.sleep(10)
     end)
 
-    local t2, t3
+    local t2 --- @type vim.async.Task
+    local t3 --- @type vim.async.Task
 
     local parent = run(function()
       t2 = run(function()
@@ -469,13 +443,29 @@ stack traceback:
     end)
 
     -- should exit immediately as neither child1 or child2 are awaited
-    main:wait()
+    check_task_err(main, 'uncompleted children')
     check_task_err(child1, 'closed')
     check_task_err(child2, 'closed')
   end)
 
+  it_exec('should not fail the parent task if children finish before parent', function()
+    local child1 --- @type vim.async.Task
+    local child2 --- @type vim.async.Task
+    local main = run(function()
+      child1 = run(Async.sleep, 5)
+      child2 = run(Async.sleep, 5)
+      Async.sleep(20)
+      -- do no await child1 or child2
+    end)
+
+    -- should exit immediately as neither child1 or child2 are awaited
+    main:wait()
+    child1:wait()
+    child2:wait()
+  end)
+
   it_exec('automatically closes suspended child tasks', function()
-    local forever_child
+    local forever_child --- @type vim.async.Task
 
     local main = run(function()
       forever_child = run(function()
@@ -486,7 +476,7 @@ stack traceback:
       Async.sleep(2)
     end)
     eq(forever_child:status(), 'suspended')
-    main:wait()
+    check_task_err(main, 'uncompleted children')
     check_task_err(forever_child, 'closed')
   end)
 
