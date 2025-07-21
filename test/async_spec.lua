@@ -377,7 +377,19 @@ stack traceback:
     local task = run(function()
       coroutine.yield('This will cause an error.')
     end)
-    check_task_err(task, 'Unexpected coroutine.yield')
+    check_task_err(task, 'Unexpected coroutine.yield()')
+  end)
+
+  it_exec('does not allow coroutine.resume', function()
+    local co --- @type thread
+    local task = run(function()
+      co = coroutine.running()
+      Async.sleep(1)
+    end)
+    local status, err = coroutine.resume(co)
+    assert(not status, 'Expected coroutine.resume to fail')
+    assert(err:match('Unexpected coroutine.resume%(%)'), err)
+    check_task_err(task, 'Unexpected coroutine.resume%(%)')
   end)
 
   it_exec('does not need new stack frame for non-deferred continuations', function()

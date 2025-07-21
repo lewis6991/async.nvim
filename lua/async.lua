@@ -174,6 +174,40 @@ end
 
 --- Internal marker used to identify that a yielded value is an asynchronous yielding.
 local yield_marker = {}
+local resume_marker = {}
+
+--- @generic T
+--- @param err? any
+--- @param ... T...
+--- @return T...
+local function check_yield(marker, err, ...)
+  if marker ~= resume_marker then
+    -- This will leave the task in a dead (and unfinshed) state
+    error('Unexpected coroutine.resume()', 2)
+  elseif err then
+    error(err, 0)
+  end
+  return ...
+end
+
+--- @generic T
+--- @param thread thread
+--- @return 'finished'|'error'|'ok' status
+--- @param ... T...
+--- @return T...
+local function check_resume(thread, stat, ...)
+  if not stat or coroutine.status(thread) == 'dead' then
+    return stat and 'finished' or 'error', ...
+  end
+
+  local marker, fn = ...
+
+  if marker ~= yield_marker or not is_callable(fn) then
+    return 'error', 'Unexpected coroutine.yield()'
+  end
+
+  return 'ok', fn
+end
 
 --- @class vim.async.Closable
 --- @field close fun(self, callback?: fun())
@@ -224,7 +258,10 @@ do --- Task
   --- @param func function
   --- @return vim.async.Task
   function Task._new(func)
-    local thread = coroutine.create(func)
+    local thread = coroutine.create(function(marker, ...)
+      check_yield(marker)
+      return func(...)
+    end)
 
     local self = setmetatable({
       _closing = false,
@@ -292,7 +329,7 @@ do --- Task
 
     local res = pack_len(self._future:result())
 
-    assert(self:status() == 'dead' or res[2] == 'Unexpected coroutine.yield')
+    assert(self:status() == 'dead' or res[2] == 'Unexpected coroutine.yield()')
 
     if not res[1] then
       error(res[2], 2)
@@ -432,20 +469,13 @@ do --- Task
 
     --- @private
     --- @param task vim.async.Task
+    --- @param status 'finished'|'error'|'ok'
     --- @return fun(callback: fun(...:any...): vim.async.Closable?)?
-    local function resume_co(task, stat, ...)
-      if not stat or coroutine.status(task._thread) == 'dead' then
-        -- Coroutine had error or finished
-        return finish(task, stat, ...)
+    local function resume_co(task, status, ...)
+      if status ~= 'ok' then
+        return finish(task, status == 'finished', ...)
       end
-
-      local marker, fn = ...
-
-      if marker ~= yield_marker or not is_callable(fn) then
-        return finish(task, false, 'Unexpected coroutine.yield')
-      end
-
-      return fn
+      return (...)
     end
 
     --- @param task vim.async.Task
@@ -500,7 +530,19 @@ do --- Task
       local args = pack_len(...)
 
       while args do
-        local awaitable = resume_co(self, coroutine.resume(self._thread, unpack_len(args)))
+        if coroutine.status(self._thread) ~= 'suspended' then
+          -- Can only happen if coroutine.resume() is called outside of this
+          -- function. When that happens check_yield() will error the coroutine
+          -- which puts it in the 'dead' state.
+          return finish(self, false, 'Unexpected coroutine.resume()')
+        end
+        local awaitable = resume_co(
+          self,
+          check_resume(
+            self._thread,
+            coroutine.resume(self._thread, resume_marker, unpack_len(args))
+          )
+        )
         if not awaitable then
           return true
         end
@@ -567,17 +609,6 @@ do --- M.await()
     end
   end
 
-  --- @generic T
-  --- @param err? any
-  --- @param ... T...
-  --- @return T...
-  local function check(err, ...)
-    if err then
-      error(err, 0)
-    end
-    return ...
-  end
-
   --- Asynchronous blocking wait
   ---
   --- Example:
@@ -631,7 +662,7 @@ do --- M.await()
       error('Invalid arguments, expected Task or (argc, func) got: ' .. vim.inspect(arg1), 2)
     end
 
-    return check(coroutine.yield(yield_marker, fn))
+    return check_yield(coroutine.yield(yield_marker, fn))
   end
 end
 
