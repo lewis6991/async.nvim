@@ -121,6 +121,14 @@
 --- @class vim.async
 local M = {}
 
+--- @class vim.async.Cancelled
+local Cancelled = {}
+function Cancelled.__tostring()
+  return 'Task was cancelled'
+end
+
+local CANCELLED = setmetatable({}, Cancelled)
+
 -- Use max 32-bit signed int value to avoid overflow on 32-bit systems.
 -- Do not use `math.huge` as it is not interpreted as a positive integer on all
 -- platforms.
@@ -170,8 +178,7 @@ local threads = setmetatable({}, { __mode = 'k' })
 --- @return vim.async.Task<any>?
 local function running()
   local task = threads[coroutine.running()]
-  -- TODO(lewis6991): condition needs a test
-  if task and not (task:completed() or task._closing) then
+  if task and not task:completed() then
     return task
   end
 end
@@ -280,6 +287,11 @@ do --- Task
     return self
   end
 
+  --- @return boolean
+  function Task:cancelled()
+    return self._future._err == CANCELLED
+  end
+
   --- @package
   function Task:_unwait(cb)
     return self._future:_remove_cb(cb)
@@ -314,11 +326,7 @@ do --- Task
   --- @overload fun(timeout?: integer): R...
   function Task:wait(callback_or_timeout)
     if is_callable(callback_or_timeout) then
-      if self._closing then
-        callback_or_timeout('Task is closing or closed')
-      else
-        self._future:wait(callback_or_timeout)
-      end
+      self._future:wait(callback_or_timeout)
       return
     end
 
@@ -435,8 +443,7 @@ do --- Task
         end)
       end
 
-      -- raised 'closed' error in the coroutine
-      self:_resume('closed')
+      self:_resume(CANCELLED)
 
       return
     end
@@ -480,7 +487,11 @@ do --- Task
         threads[task._thread] = nil
 
         if not stat then
-          task._future:complete((...))
+          if (...) == CANCELLED then
+            task._future:complete('closed')
+          else
+            task._future:complete((...))
+          end
         else
           task._future:complete(nil, ...)
         end
@@ -560,6 +571,16 @@ do --- Task
       local args = pack_len(...)
 
       while args do
+        if self._closing then
+          if coroutine.status(self._thread) == 'suspended' then
+            resume_co(
+              self,
+              check_resume(self._thread, coroutine.resume(self._thread, resume_marker, 'closed'))
+            )
+          end
+          return
+        end
+
         if coroutine.status(self._thread) ~= 'suspended' then
           -- Can only happen if coroutine.resume() is called outside of this
           -- function. When that happens check_yield() will error the coroutine
@@ -621,6 +642,13 @@ function M.run(func, ...)
   return task
 end
 
+--- Returns true if the current task has been cancelled.
+--- @return boolean
+function M.is_cancelled()
+  local task = running()
+  return task and task._closing or false
+end
+
 do --- M.await()
   --- @generic T, R
   --- @param argc integer
@@ -677,6 +705,10 @@ do --- M.await()
   --- @overload fun(task: vim.async.Task<R>): R...
   function M.await(...)
     assert(running(), 'Not in async context')
+
+    if M.is_cancelled() then
+      error('closed', 0)
+    end
 
     local arg1 = select(1, ...)
 
@@ -943,7 +975,7 @@ do --- M.future()
   --- @field private _callback_pos integer
   --- Error result of the task is an error occurs.
   --- Must use `await` to get the result.
-  --- @field private _err? any
+  --- @field package _err? any
   ---
   --- Result of the task.
   --- Must use `await` to get the result.
@@ -997,7 +1029,7 @@ do --- M.future()
   end
 
   -- Mark the Future as complete and set its err or result.
-  --- @param err? string
+  --- @param err? any
   --- @param ... any result
   function Future:complete(err, ...)
     if err ~= nil then

@@ -492,67 +492,101 @@ stack traceback:
     check_task_err(forever_child, 'closed')
   end)
 
-  -- it_exec_multi('ping pong', function()
-  --   --- @async
-  --   --- @param fn async fun()
-  --   local function catch_closed(fn)
-  --     local ok, err1 = xpcall(fn, function(err)
-  --       if err == 'closed' then
-  --         return err
-  --       end
-  --       return debug.traceback(err, 2)
-  --     end)
-  --     if not ok then
-  --       if err1 == 'closed' then
-  --         return true
-  --       end
-  --       error(err1)
-  --     end
-  --     return false
-  --   end
-  --
-  --   local msgs = {}
-  --
-  --   --- @async
-  --   --- @param sem vim.async.Semaphore
-  --   local function player(name, ball, sem)
-  --     while true do
-  --       -- if catch_closed(function()
-  --       sem:acquire()
-  --       -- end) then
-  --       --   print(("%s: table's gone"):format(name))
-  --       --   break
-  --       -- end
-  --       ball.hits = ball.hits + 1
-  --       msgs[#msgs + 1] = name
-  --       Async.sleep(2)
-  --       sem:release()
-  --     end
-  --   end
-  --
-  --   local ball = { hits = 0 }
-  --   local p1, p2
-  --
-  --   --- @async
-  --   local function pingPong()
-  --     local sem = Async.semaphore()
-  --     sem:acquire()
-  --
-  --     p1 = run('ping', player, 'ping', ball, sem)
-  --     p2 = run('pong', player, 'pong', ball, sem)
-  --
-  --     sem:release()
-  --     Async.sleep(22)
-  --     -- while ball.hits < 10 do
-  --     --   Async.sleep(1)
-  --     -- end
-  --   end
-  --
-  --   local p = run('main', pingPong)
-  --   p:wait(50)
-  --   check_task_err(p1, 'closed')
-  --   check_task_err(p2, 'closed')
-  --
-  --   -- eq(msgs, { 'ping', 'pong', 'ping', 'pong', 'ping', 'pong', 'ping', 'pong', 'ping', 'pong' })
-  -- end)
+  it_exec('ping pong', function()
+    local msgs = {}
+    local ball = { hits = 0 }
+    local max_hits = 10
+
+    --- @async
+    --- @param name string
+    --- @param sem vim.async.Semaphore
+    local function player(name, sem)
+      while ball.hits < max_hits do
+        local ok, err = pcall(sem.acquire, sem)
+        if not ok or ball.hits >= max_hits then
+          if not ok and not tostring(err):match('closed') then
+            error(err)
+          end
+          break
+        end
+
+        ball.hits = ball.hits + 1
+        msgs[#msgs + 1] = name
+        Async.sleep(2)
+        sem:release()
+      end
+    end
+
+    run(function()
+      local sem = Async.semaphore(1)
+      local p1 = run(player, 'ping', sem)
+      local p2 = run(player, 'pong', sem)
+      Async.join({ p1, p2 })
+    end):wait()
+
+    eq({ 'ping', 'pong', 'ping', 'pong', 'ping', 'pong', 'ping', 'pong', 'ping', 'pong' }, msgs)
+  end)
+
+  it_exec('iter tasks with cancellation', function()
+    local tasks = {} --- @type vim.async.Task<any>[]
+
+    for i = 1, 4 do
+      tasks[i] = run(function()
+        if i == 2 then
+          await(function(_cb)
+            -- Never call callback
+          end)
+        end
+        return 'FINISH', i
+      end)
+    end
+
+    assert(tasks[2]):close()
+
+    local results = {} --- @type table[]
+    run(function()
+      for i, err, r1, r2 in Async.iter(tasks) do
+        results[i] = { err, r1 and { r1, r2 } or nil }
+      end
+    end):wait(1000)
+
+    eq({
+      [1] = { nil, { 'FINISH', 1 } },
+      [2] = { 'closed', nil },
+      [3] = { nil, { 'FINISH', 3 } },
+      [4] = { nil, { 'FINISH', 4 } },
+    }, results)
+  end)
+
+  it_exec('join tasks with cancellation', function()
+    local tasks = {} --- @type vim.async.Task<any>[]
+
+    for i = 1, 4 do
+      tasks[i] = run(function()
+        if i == 2 then
+          await(function(_cb)
+            -- Never call callback
+          end)
+        end
+        return 'FINISH', i
+      end)
+    end
+
+    assert(tasks[2]):close()
+
+    local results = run(function()
+      return Async.join(tasks)
+    end):wait(1000)
+
+    for _, r in ipairs(results) do
+      r.n = nil
+    end
+
+    eq({
+      [1] = { nil, 'FINISH', 1 },
+      [2] = { 'closed' },
+      [3] = { nil, 'FINISH', 3 },
+      [4] = { nil, 'FINISH', 4 },
+    }, results)
+  end)
 end)

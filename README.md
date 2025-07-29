@@ -185,8 +185,19 @@ struct SwiftConcurrencyApp {
 local function longRunningChildTask(id)
   print(('Child Task (%d): Starting...'):format(id))
   for i = 1, 10 do
-    -- Unlike swift, calling close() completely stops the thread from resuming
-    -- so there is no way to check for cancellation.
+    -- Option 1: Check `is_cancelled()` for graceful exit
+    if async.is_cancelled() then
+      print(('Child Task (%d): Was cancelled.'):format(id))
+      return
+    end
+
+    -- Option 2: `check_cancelled()` throws if cancelled
+    local _, err = pcall(async.check_cancelled)
+    if err then
+      print(('Child Task (%d): Cancellation detected by check_cancelled().'):format(id))
+      return
+    end
+
     print(('Child Task (%d): Working... step %d'):format(id, i))
     -- Simulate work with a cancellable sleep
     async.sleep(500) -- 0.5 second
