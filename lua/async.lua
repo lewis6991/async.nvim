@@ -53,31 +53,33 @@
 --- ### async-function
 ---
 --- Async functions are functions that must run in an [async-context] because
---- they contain at least one call that interacts with the event loop.
+--- they contain at least one call to `async.await()`` that yields to event
+--- loop.
 ---
 --- These functions can be executed directly using `async.run()` which runs the
 --- function in an async context.
 ---
---- Use the `@async` annotation to designate a function as an async function.
+--- Use the `@async` annotation to mark a function as an async function.
 ---
 --- ### async-context
 ---
---- An async-context is an executation context managed by `vim.async` and is
---- implemented via [lua-coroutine]s. Many of the functions and methods in
---- `vim.async` can only run when within this context.
+--- An async-context is an execution context managed by `vim.async` and is
+--- implemented via [lua-coroutine]s. Only [async-functions] can run in an
+--- async-context.
 ---
 --- ### async-error-handling
 ---
 --- Errors are handled differently depending on whether a function is called in
 --- a blocking or non-blocking manner.
 ---
---- If a function is waited in a blocking call (via [async.await()] or [async.Task:wait()]),
---- errors are raised immediately.
+--- If a function is waited in a blocking call (via [async.await()] or
+--- [async.Task:wait()] with `nil` or a timeout), errors are raised in the
+--- calling thread.
 ---
---- If a function is waited in a non-blocking way (via [async.Task:wait()]),
---- errors are passed as part of the result in the form of `(err?, ...)`, where
---- `err` is the error message and `...` are the results of the function when
---- there is no error.
+--- If a function is waited in a non-blocking way (via [async.Task:wait()] with
+--- a callback), errors are passed as part of the result in the form of `(err?,
+--- ...)`, where `err` is the error message and `...` are the results of the
+--- function when there is no error.
 ---
 --- To run a Task without waiting for the result while still raising
 --- any errors, use [async.Task:raise_on_error()].
@@ -103,8 +105,9 @@
 --- main:close() -- calls `child:close()` but not `t1:close()`
 --- ```
 ---
---- When a prent task finishes, either successfully or via an error, it will
---- close all of its children tasks.
+--- When a parent task finishes, if finishes normally without an error, it will
+--- await all of its children tasks before it completes. If it finishes with an
+--- error, it close all of its children tasks.
 ---
 --- ```lua
 --- local main = async.run(function()
@@ -282,6 +285,8 @@ do --- Task
     return self._future:_remove_cb(cb)
   end
 
+  --- Returns whether the Task has completed.
+  --- @return boolean
   function Task:completed()
     return self._future:completed()
   end
