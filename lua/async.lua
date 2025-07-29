@@ -167,7 +167,8 @@ local threads = setmetatable({}, { __mode = 'k' })
 --- @return vim.async.Task<any>?
 local function running()
   local task = threads[coroutine.running()]
-  if task and not (task:_completed() or task._closing) then
+  -- TODO(lewis6991): condition needs a test
+  if task and not (task:completed() or task._closing) then
     return task
   end
 end
@@ -271,8 +272,6 @@ do --- Task
       _children_idx = 0,
     }, Task)
 
-    self:_attach(running())
-
     threads[thread] = self
 
     return self
@@ -283,8 +282,7 @@ do --- Task
     return self._future:_remove_cb(cb)
   end
 
-  --- @package
-  function Task:_completed()
+  function Task:completed()
     return self._future:completed()
   end
 
@@ -321,7 +319,7 @@ do --- Task
 
     if
       not vim.wait(callback_or_timeout or MAX_TIMEOUT, function()
-        return self:_completed()
+        return self:completed()
       end)
     then
       error('timeout', 2)
@@ -344,7 +342,7 @@ do --- Task
     return pcall(self.wait, self, timeout)
   end
 
-  --- @private
+  --- @package
   --- @param parent? vim.async.Task
   function Task:_attach(parent)
     if parent then
@@ -415,26 +413,35 @@ do --- Task
   --- If callback is provided it will run asynchronously,
   --- else it will run synchronously.
   ---
-  --- @param callback? fun(closed: boolean)
-  --- @overload fun(): boolean
-  --- @overload fun(callback: fun(closed: boolean))
+  --- @param callback? fun()
   function Task:close(callback)
-    return M.run(function()
-      if self:_completed() or self._closing then
-        return false
+    local awaiting = getmetatable(self._awaiting) ~= Task and self._awaiting or nil
+
+    local function close0()
+      if self:completed() or self._closing then
+        return
       end
 
       self._closing = true
 
-      if self._awaiting and getmetatable(self._awaiting) ~= Task then
+      if awaiting then
         M.await(function(on_child_close)
-          self._awaiting:close(on_child_close)
+          awaiting:close(on_child_close)
         end)
       end
-      -- propagate close signal to children
+
+      -- raised 'closed' error in the coroutine
       self:_resume('closed')
-      return true
-    end):wait(callback)
+
+      return
+    end
+
+    -- perf: avoid run() if there are no callbacks or awaiting
+    if callback or awaiting then
+      return M.run(close0):wait(callback)
+    else
+      return close0()
+    end
   end
 
   do -- Task:_resume()
@@ -443,27 +450,44 @@ do --- Task
     --- @param stat boolean
     --- @param ... any result
     local function finish(task, stat, ...)
-      -- Keep hold of the child tasks so we can use `task:traceback()`
-      -- `task:traceback()`
-      if stat or getmetatable(task._awaiting) ~= Task then
-        task._awaiting = nil
-      end
-
       local has_children = next(task._children) ~= nil
-      for _, child in pairs(task._children) do
-        child:close()
+
+      local function finish0(...)
+        -- Keep hold of the child tasks so we can use `task:traceback()`
+        -- `task:traceback()`
+        if stat or getmetatable(task._awaiting) ~= Task then
+          task._awaiting = nil
+        end
+
+        if not stat then
+          -- Task had an error, close all children
+          for _, child in pairs(task._children) do
+            child:close()
+          end
+        end
+
+        for _, child in pairs(task._children) do
+          M.await(child)
+        end
+
+        task:detach()
+
+        threads[task._thread] = nil
+
+        if not stat then
+          task._future:complete((...))
+        else
+          task._future:complete(nil, ...)
+        end
       end
 
-      task:detach()
-
-      threads[task._thread] = nil
-
-      if not stat then
-        task._future:complete((...))
-      elseif has_children then
-        task._future:complete('uncompleted children')
-      elseif stat then
-        task._future:complete(nil, ...)
+      -- Only run finish0() if there are children, otherwise
+      -- this will cause infinite recursion:
+      --   M.run() -> task:_resume() -> resume_co() -> finish() -> M.run()
+      if has_children then
+        M.run(finish0, ...)
+      else
+        finish0(...)
       end
     end
 
@@ -473,7 +497,8 @@ do --- Task
     --- @return fun(callback: fun(...:any...): vim.async.Closable?)?
     local function resume_co(task, status, ...)
       if status ~= 'ok' then
-        return finish(task, status == 'finished', ...)
+        finish(task, status == 'finished', ...)
+        return
       end
       return (...)
     end
@@ -491,7 +516,7 @@ do --- Task
         end
         settled = true
 
-        if task:_completed() then
+        if task:completed() then
           return
         end
 
@@ -534,7 +559,8 @@ do --- Task
           -- Can only happen if coroutine.resume() is called outside of this
           -- function. When that happens check_yield() will error the coroutine
           -- which puts it in the 'dead' state.
-          return finish(self, false, 'Unexpected coroutine.resume()')
+          finish(self, false, 'Unexpected coroutine.resume()')
+          return
         end
         local awaitable = resume_co(
           self,
@@ -544,7 +570,7 @@ do --- Task
           )
         )
         if not awaitable then
-          return true
+          return
         end
         args = handle_awaitable(self, awaitable)
       end
@@ -585,6 +611,7 @@ end
 function M.run(func, ...)
   -- TODO(lewis6991): add task names
   local task = Task._new(func)
+  task:_attach(running())
   task:_resume(...)
   return task
 end

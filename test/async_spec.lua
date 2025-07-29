@@ -40,7 +40,7 @@ describe('async', function()
         if ok then
           error('Expected task to error, but it completed successfully', 2)
         elseif not err:match(pat) then
-          error(task:traceback(err), 2)
+          error('Unexpected error: ' .. task:traceback(err), 2)
         end
         return err
       end
@@ -446,18 +446,17 @@ stack traceback:
     t3:wait() -- was not closed
   end)
 
-  it_exec('automatically closes child tasks', function()
-    local child1, child2
+  it_exec('automatically awaits child tasks', function()
+    local child1, child2 --- @type vim.async.Task, vim.async.Task
     local main = run(function()
       child1 = run(Async.sleep, 10)
       child2 = run(Async.sleep, 10)
       -- do no await child1 or child2
     end)
 
-    -- should exit immediately as neither child1 or child2 are awaited
-    check_task_err(main, 'uncompleted children')
-    check_task_err(child1, 'closed')
-    check_task_err(child2, 'closed')
+    main:wait()
+    assert(child1:completed())
+    assert(child2:completed())
   end)
 
   it_exec('should not fail the parent task if children finish before parent', function()
@@ -488,7 +487,8 @@ stack traceback:
       Async.sleep(2)
     end)
     eq(forever_child:status(), 'suspended')
-    check_task_err(main, 'uncompleted children')
+    main:close()
+    check_task_err(main, 'closed')
     check_task_err(forever_child, 'closed')
   end)
 
