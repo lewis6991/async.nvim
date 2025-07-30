@@ -151,6 +151,14 @@ vim.async.run({func}, {...})                                 *vim.async.run()*
     - (`Task<R>`)
 
 ------------------------------------------------------------------------------
+vim.async.is_cancelled()                            *vim.async.is_cancelled()*
+
+    Returns true if the current task has been cancelled.
+
+    Returns: ~
+    - (`boolean`)
+
+------------------------------------------------------------------------------
 vim.async.await({...})                                     *vim.async.await()*
 
     Asynchronous blocking wait
@@ -189,9 +197,9 @@ vim.async.await({...})                                     *vim.async.await()*
     - `T`, `R`
 
     Overloads: ~
-    - `fun(func: fun(callback: fun(...: R ...)) -> vim.async.Closable?) -> R ...`
-    - `fun(argc: integer, func: fun(...: T ..., callback: fun(...: R ...)) -> vim.async.Closable?, ...: T ...) -> R ...`
-    - `fun(task: Task<R>) -> R ...`
+    - `async fun(func: fun(callback: fun(...: R ...)) -> vim.async.Closable?) -> R ...`
+    - `async fun(argc: integer, func: fun(...: T ..., callback: fun(...: R ...)) -> vim.async.Closable?, ...: T ...) -> R ...`
+    - `async fun(task: Task<R>) -> R ...`
 
     Parameters: ~
     - {...} (`any`): see overloads
@@ -479,6 +487,8 @@ vim.async.semaphore({permits})                         *vim.async.semaphore()*
     - (`vim.async.Semaphore`) (See |vim.async.Semaphore|)
 
 ==============================================================================
+*vim.async.Cancelled*
+==============================================================================
 *vim.async.Closable*
 ------------------------------------------------------------------------------
 *vim.async.Closable.close*
@@ -577,7 +587,7 @@ vim.async.Future:complete({err}, {...})          *vim.async.Future:complete()*
     Mark the Future as complete and set its err or result.
 
     Parameters: ~
-    - {err} (`string?`)
+    - {err} (`any`)
     - {...} (`any`): result
 
 
@@ -704,6 +714,11 @@ To cancel a running Task use the `close()` method. Calling it will cause the
 Task to throw a "closed" error in the wrapped coroutine.
 
 Note a Task can be waited on via more than one waiter.
+
+------------------------------------------------------------------------------
+vim.async.Task:cancelled()                        *vim.async.Task:cancelled()*
+    Returns: ~
+    - (`boolean`)
 
 ------------------------------------------------------------------------------
 vim.async.Task:completed()                        *vim.async.Task:completed()*

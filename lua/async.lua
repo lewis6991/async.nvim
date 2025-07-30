@@ -430,6 +430,7 @@ do --- Task
   function Task:close(callback)
     local awaiting = getmetatable(self._awaiting) ~= Task and self._awaiting or nil
 
+    --- @async
     local function close0()
       if self:completed() or self._closing then
         return
@@ -452,6 +453,7 @@ do --- Task
     if callback or awaiting then
       return M.run(close0):wait(callback)
     else
+      --- @diagnostic disable-next-line: await-in-sync
       return close0()
     end
   end
@@ -464,6 +466,7 @@ do --- Task
     local function finish(task, stat, ...)
       local has_children = next(task._children) ~= nil
 
+      --- @async
       local function finish0(...)
         -- Keep hold of the child tasks so we can use `task:traceback()`
         -- `task:traceback()`
@@ -503,6 +506,7 @@ do --- Task
       if has_children then
         M.run(finish0, ...)
       else
+        --- @diagnostic disable-next-line: await-in-sync
         finish0(...)
       end
     end
@@ -700,9 +704,9 @@ do --- M.await()
   --- @async
   --- @generic T, R
   --- @param ... any see overloads
-  --- @overload fun(func: (fun(callback: fun(...:R...)): vim.async.Closable?)): R...
-  --- @overload fun(argc: integer, func: (fun(...:T..., callback: fun(...:R...)): vim.async.Closable?), ...:T...): R...
-  --- @overload fun(task: vim.async.Task<R>): R...
+  --- @overload async fun(func: (fun(callback: fun(...:R...)): vim.async.Closable?)): R...
+  --- @overload async fun(argc: integer, func: (fun(...:T..., callback: fun(...:R...)): vim.async.Closable?), ...:T...): R...
+  --- @overload async fun(task: vim.async.Task<R>): R...
   function M.await(...)
     assert(running(), 'Not in async context')
 
@@ -826,23 +830,10 @@ function M.iter(tasks)
   --- @type table<vim.async.Task<any>,function>
   local task_cbs = setmetatable({}, { __mode = 'v' })
 
-  --- If can_gc_cbs is true, then the iterator function has been garbage
-  --- collected and means any awaiters can also be garbage collected. The
-  --- only time we can't do this is if with the special case when iter() is
-  --- called anonymously (`local i = vim.async.iter(tasks)()`), so we should not
-  --- garbage collect the callbacks until at least one awaiter is called.
-  local can_gc_cbs = false
-
   -- Wait on all the tasks. Keep references to the task futures and wait
   -- callbacks so we can remove them when the iterator is garbage collected.
   for i, task in ipairs(tasks) do
     local function cb(err, ...)
-      if can_gc_cbs then
-        for t, tcb in pairs(task_cbs) do
-          t:_unwait(tcb)
-        end
-      end
-
       local callback = waiter
 
       -- Clear waiter before calling it
@@ -875,8 +866,9 @@ function M.iter(tasks)
       end
     end),
     function()
-      -- Don't gc callbacks just yet. Wait until at least one of them is called.
-      can_gc_cbs = true
+      for t, tcb in pairs(task_cbs) do
+        t:_unwait(tcb)
+      end
     end
   )
 end

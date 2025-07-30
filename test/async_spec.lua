@@ -45,11 +45,19 @@ describe('async', function()
         return err
       end
 
-      function _G.eq(expected, actual)
+      function _G.eq(expected, actual, msg)
         assert(
           vim.deep_equal(expected, actual),
-          ('%s does not equal %s'):format(vim.inspect(actual), vim.inspect(expected))
+          ('%s\nactual: %s\nexpected: %s'):format(msg, vim.inspect(actual), vim.inspect(expected))
         )
+      end
+
+      --- @async
+      function _G.eternity()
+        await(function(_cb)
+          -- Never call callback
+          return add_handle('timer', vim.uv.new_timer()) --[[@as vim.async.Closable]]
+        end)
       end
     end)
   end)
@@ -62,6 +70,14 @@ describe('async', function()
       collectgarbage('collect')
       assert(not next(uv_handles), 'Resources not collected')
     end)
+  end)
+
+  it_exec('error stack trace on synchronous wait', function()
+    local task = run(function()
+      error('SYNC ERR')
+    end)
+    local err = check_task_err(task, 'SYNC ERR')
+    assert(err:match('async_spec.lua:%d+:'), 'missing stacktrace file')
   end)
 
   it_exec('can await a uv callback function', function()
@@ -88,15 +104,8 @@ describe('async', function()
   end)
 
   it_exec('callback function can be closed', function()
-    local task = run(function()
-      await(1, function(_callback)
-        -- Never call callback
-        return add_handle('timer', vim.uv.new_timer()) --[[@as vim.async.Closable]]
-      end)
-    end)
-
+    local task = run(eternity)
     task:close()
-
     check_task_err(task, 'closed')
   end)
 
@@ -135,12 +144,7 @@ describe('async', function()
 
   it_exec('callback function can be closed (nested)', function()
     local task = run(function()
-      await(run(function()
-        await(function(_callback)
-          -- Never call callback
-          return add_handle('timer', vim.uv.new_timer()) --[[@as vim.async.Closable]]
-        end)
-      end))
+      await(run(eternity))
     end)
 
     task:close()
@@ -149,13 +153,7 @@ describe('async', function()
   end)
 
   it_exec('can timeout tasks', function()
-    local task = run(function()
-      await(function(_callback)
-        -- Never call callback
-        return add_handle('timer', vim.uv.new_timer()) --[[@as vim.async.Closable]]
-      end)
-    end)
-
+    local task = run(eternity)
     check_task_err(task, 'timeout')
     task:close()
     check_task_err(task, 'closed')
@@ -366,11 +364,8 @@ stack traceback:
   end)
 
   it_exec('can async timeout a test', function()
-    local eternity = run(await, function(_cb)
-      -- Never call callback
-    end)
-
-    check_task_err(run(Async.timeout, 10, eternity), 'timeout')
+    local task = run(eternity)
+    check_task_err(run(Async.timeout, 10, task), 'timeout')
   end)
 
   it_exec('does not allow coroutine.yield', function()
@@ -533,9 +528,7 @@ stack traceback:
     for i = 1, 4 do
       tasks[i] = run(function()
         if i == 2 then
-          await(function(_cb)
-            -- Never call callback
-          end)
+          eternity()
         end
         return 'FINISH', i
       end)
@@ -558,15 +551,37 @@ stack traceback:
     }, results)
   end)
 
+  it_exec('iter tasks with garbage collection', function()
+    --- @param task vim.async.Task
+    local function get_task_callback_count(task)
+      --- @diagnostic disable-next-line: access-invisible
+      return vim.tbl_count(task._future._callbacks)
+    end
+
+    local task = run(eternity)
+
+    local t = run(function()
+      local i = Async.iter({ task })()
+      eq(get_task_callback_count(task), 1, 'task should have one callback')
+      eq(i, 1)
+      collectgarbage('collect')
+      eq(get_task_callback_count(task), 0, 'task should have no callbacks')
+    end)
+
+    task:close()
+
+    t:wait()
+
+    check_task_err(task, 'closed')
+  end)
+
   it_exec('join tasks with cancellation', function()
     local tasks = {} --- @type vim.async.Task<any>[]
 
     for i = 1, 4 do
       tasks[i] = run(function()
         if i == 2 then
-          await(function(_cb)
-            -- Never call callback
-          end)
+          eternity()
         end
         return 'FINISH', i
       end)
