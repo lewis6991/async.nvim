@@ -464,7 +464,7 @@ do --- Task
         threads[task._thread] = nil
 
         if not stat then
-          task._future:complete((...))
+          task._future:complete((...) or 'unknown error')
         else
           task._future:complete(nil, ...)
         end
