@@ -48,7 +48,11 @@ describe('async', function()
       function _G.eq(expected, actual, msg)
         assert(
           vim.deep_equal(expected, actual),
-          ('%s\nactual: %s\nexpected: %s'):format(msg, vim.inspect(actual), vim.inspect(expected))
+          ('%s\nactual: %s\nexpected: %s'):format(
+            msg or 'Mismatch:',
+            vim.inspect(actual),
+            vim.inspect(expected)
+          )
         )
       end
 
@@ -103,31 +107,14 @@ describe('async', function()
     assert(done)
   end)
 
-  it_exec('callback function can be closed', function()
+  it_exec('can close tasks', function()
     local task = run(eternity)
     task:close()
     check_task_err(task, 'closed')
   end)
 
-  it_exec('callback function can be double closed', function()
-    local task = run(function()
-      await(1, function(callback)
-        -- Never call callback
-        local timer = add_handle('timer', vim.uv.new_timer())
-
-        -- prematurely close the timer
-        timer:close(callback)
-        return timer --[[@as vim.async.Closable]]
-      end)
-
-      return 'FINISH'
-    end)
-
-    check_task_err(task, 'handle .* is already closing')
-  end)
-
   -- Same as test above but uses async and wrap
-  it_exec('callback function can be closed (2)', function()
+  it_exec('can close wrapped tasks', function()
     local wfn = wrap(1, function(_callback)
       -- Never call callback
       return add_handle('timer', vim.uv.new_timer()) --[[@as vim.async.Closable]]
@@ -138,18 +125,38 @@ describe('async', function()
     end)
 
     task:close()
-
     check_task_err(task, 'closed')
   end)
 
-  it_exec('callback function can be closed (nested)', function()
+  it_exec('gracefully handles when closables are prematurely closed', function()
     local task = run(function()
-      await(run(eternity))
+      await(1, function(callback)
+        -- Never call callback
+        local timer = add_handle('timer', vim.uv.new_timer())
+
+        -- prematurely close the timer
+        timer:close(callback)
+
+        return timer --[[@as vim.async.Closable]]
+      end)
+
+      return 'FINISH'
+    end)
+
+    check_task_err(task, 'handle .* is already closing')
+  end)
+
+  it_exec('callback function can be closed (nested)', function()
+    local child --- @type vim.async.Task
+    local task = run(function()
+      child = run(eternity)
+      await(child)
     end)
 
     task:close()
 
     check_task_err(task, 'closed')
+    check_task_err(child, 'closed')
   end)
 
   it_exec('can timeout tasks', function()
@@ -159,7 +166,7 @@ describe('async', function()
     check_task_err(task, 'closed')
   end)
 
-  it_exec('handle tasks that error', function()
+  it_exec('handles tasks that error', function()
     local task = run(function()
       await(function(callback)
         local timer = add_handle('timer', vim.uv.new_timer())
@@ -173,7 +180,7 @@ describe('async', function()
     check_task_err(task, 'GOT HERE')
   end)
 
-  it_exec('handle tasks that complete', function()
+  it_exec('handles tasks that complete', function()
     local task = run(function()
       await(function(callback)
         local timer = add_handle('timer', vim.uv.new_timer())
@@ -181,9 +188,12 @@ describe('async', function()
         return timer --[[@as vim.async.Closable]]
       end)
       await(vim.schedule)
+      return nil, 1
     end)
 
-    task:wait(10)
+    local r1, r2 = task:wait(10)
+    eq(r1, nil)
+    eq(r2, 1)
   end)
 
   it_exec('can wait on an empty task', function()
@@ -531,6 +541,19 @@ stack traceback:
     end):wait()
 
     eq({ 'ping', 'pong', 'ping', 'pong', 'ping', 'pong', 'ping', 'pong', 'ping', 'pong' }, msgs)
+  end)
+
+  it_exec('closes detached child tasks', function()
+    local task1 = run(eternity)
+    task1:close()
+
+    local task2 = run(function()
+      await(task1)
+    end)
+
+    -- TODO(lewis6991): error should be clearer that task1 was closed and not
+    -- task2
+    check_task_err(task2, '^closed')
   end)
 
   it_exec('iter tasks with cancellation', function()
