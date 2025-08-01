@@ -430,22 +430,29 @@ do --- Task
 
       --- @async
       local function finish0(...)
-        if not stat then
-          -- Task had an error, close all children
-          for _, child in pairs(task._children) do
-            child:close()
-          end
-        end
-
+        local child_err --- @type any?
+        -- TODO(lewis6991): should we collect all errors?
         for _, child in pairs(task._children) do
-          M.await(child)
+          if not stat or child_err then
+            child:close()
+            pcall(M.await, child)
+          else
+            local ok, err = pcall(M.await, child)
+            if not ok then
+              -- Only capture the first error, but still await the rest of the
+              -- children
+              child_err = err
+            end
+          end
         end
 
         task:detach()
 
         threads[task._thread] = nil
 
-        if not stat then
+        if child_err then
+          task._future:complete(child_err)
+        elseif not stat then
           task._future:complete((...) or 'unknown error')
         else
           task._future:complete(nil, ...)

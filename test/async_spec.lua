@@ -640,4 +640,27 @@ stack traceback:
       [4] = { nil, 'FINISH', 4 },
     }, results)
   end)
+
+  it_exec('handles when a floating child errors', function()
+    local parent = run(function()
+      local _child = run(function(...)
+        Async.sleep(5)
+        error('CHILD ERROR')
+      end)
+    end)
+
+    check_task_err(parent, 'test/async_spec.lua:%d+: CHILD ERROR')
+  end)
+
+  it_exec('handles when a floating child errors and parent errors', function()
+    local parent = run(function()
+      local _child = run(function(...)
+        Async.sleep(5)
+        error('CHILD ERROR')
+      end)
+      error('PARENT ERROR')
+    end)
+
+    check_task_err(parent, 'test/async_spec.lua:%d+: PARENT ERROR')
+  end)
 end)
