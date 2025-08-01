@@ -180,6 +180,7 @@ local yield_marker = {}
 local resume_marker = {}
 
 local resume_error = 'Unexpected coroutine.resume()'
+local yield_error = 'Unexpected coroutine.yield()'
 
 --- @generic T
 --- @param err? any
@@ -198,25 +199,6 @@ local function check_yield(marker, err, ...)
     error(err, 0)
   end
   return ...
-end
-
---- @generic T
---- @param thread thread
---- @return 'finished'|'error'|'ok' status
---- @param ... T...
---- @return T...
-local function check_resume(thread, stat, ...)
-  if not stat or coroutine.status(thread) == 'dead' then
-    return stat and 'finished' or 'error', ...
-  end
-
-  local marker, fn = ...
-
-  if marker ~= yield_marker or not is_callable(fn) then
-    return 'error', 'Unexpected coroutine.yield()'
-  end
-
-  return 'ok', fn
 end
 
 --- @class vim.async.Closable
@@ -339,7 +321,7 @@ do --- Task
 
     local res = pack_len(self._future:result())
 
-    assert(self:status() == 'dead' or res[2] == 'Unexpected coroutine.yield()')
+    assert(self:status() == 'dead' or res[2] == yield_error)
 
     if not res[1] then
       error(res[2], 2)
@@ -481,47 +463,55 @@ do --- Task
       end
     end
 
-    --- @private
-    --- @param task vim.async.Task
-    --- @param status 'finished'|'error'|'ok'
+    --- @param thread thread
+    --- @param on_finish fun(stat: boolean, ...:any)
+    --- @param stat boolean
     --- @return fun(callback: fun(...:any...): vim.async.Closable?)?
-    local function resume_co(task, status, ...)
-      if status ~= 'ok' then
-        finish(task, status == 'finished', ...)
+    local function handle_co_resume(thread, on_finish, stat, ...)
+      if not stat or coroutine.status(thread) == 'dead' then
+        on_finish(stat, ...)
         return
       end
-      return (...)
+
+      local marker, fn = ...
+
+      if marker ~= yield_marker or not is_callable(fn) then
+        on_finish(false, yield_error)
+        return
+      end
+
+      return fn
     end
 
-    --- @param task vim.async.Task
     --- @param awaitable fun(callback: fun(...:any...): vim.async.Closable?)
-    local function handle_awaitable(task, awaitable)
-      local ok, r
+    --- @param on_defer fun(err?:any, ...:any)
+    --- @return any[]? next_args
+    --- @return vim.async.Closable? closable
+    local function handle_awaitable(awaitable, on_defer)
+      local ok, closable_or_err
       local settled = false
-      local next_args
-      ok, r = pcall(awaitable, function(...)
+      local next_args --- @type any[]?
+      ok, closable_or_err = pcall(awaitable, function(...)
         if settled then
           -- error here?
           return
         end
         settled = true
 
-        if task:completed() then
-          return
-        elseif ok == nil then
+        if ok == nil then
           next_args = pack_len(...)
         else
-          task:_resume(...)
+          on_defer(...)
         end
       end)
 
       if not ok then
-        task:_resume(r)
-      elseif is_closable(r) then
-        task._awaiting = r
+        return pack_len(closable_or_err)
+      elseif is_closable(closable_or_err) then
+        return next_args, closable_or_err
+      else
+        return next_args
       end
-
-      return next_args
     end
 
     --- @param task vim.async.Task
@@ -565,6 +555,7 @@ do --- Task
           end)
 
           if close_ok then
+            -- _resume will continue in close callback
             return
           end
 
@@ -580,17 +571,19 @@ do --- Task
           return
         end
 
-        local awaitable = resume_co(
-          self,
-          check_resume(
-            self._thread,
-            coroutine.resume(self._thread, resume_marker, unpack_len(args))
-          )
-        )
+        local awaitable = handle_co_resume(self._thread, function(stat, ...)
+          finish(self, stat, ...)
+        end, coroutine.resume(self._thread, resume_marker, unpack_len(args)))
+
         if not awaitable then
           return
         end
-        args = handle_awaitable(self, awaitable)
+
+        args, self._awaiting = handle_awaitable(awaitable, function(...)
+          if not self:completed() then
+            self:_resume(...)
+          end
+        end)
       end
     end
   end
