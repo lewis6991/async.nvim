@@ -121,14 +121,6 @@
 --- @class vim.async
 local M = {}
 
---- @class vim.async.Cancelled
-local Cancelled = {}
-function Cancelled.__tostring()
-  return 'Task was cancelled'
-end
-
-local CANCELLED = setmetatable({}, Cancelled)
-
 -- Use max 32-bit signed int value to avoid overflow on 32-bit systems.
 -- Do not use `math.huge` as it is not interpreted as a positive integer on all
 -- platforms.
@@ -187,14 +179,21 @@ end
 local yield_marker = {}
 local resume_marker = {}
 
+local resume_error = 'Unexpected coroutine.resume()'
+
 --- @generic T
 --- @param err? any
 --- @param ... T...
 --- @return T...
 local function check_yield(marker, err, ...)
   if marker ~= resume_marker then
-    -- This will leave the task in a dead (and unfinshed) state
-    error('Unexpected coroutine.resume()', 2)
+    local task = assert(running(), 'Not in async context')
+    vim.schedule(function()
+      task:_resume(resume_error)
+    end)
+    -- Return an error to the caller. This will also leave the task in a dead
+    -- and unfinshed state
+    error(resume_error, 0)
   elseif err then
     error(err, 0)
   end
@@ -289,7 +288,7 @@ do --- Task
 
   --- @return boolean
   function Task:cancelled()
-    return self._future._err == CANCELLED
+    return self._future._err == 'closed'
   end
 
   --- @package
@@ -428,33 +427,14 @@ do --- Task
   ---
   --- @param callback? fun()
   function Task:close(callback)
-    local awaiting = getmetatable(self._awaiting) ~= Task and self._awaiting or nil
-
-    --- @async
-    local function close0()
-      if self:completed() or self._closing then
-        return
-      end
-
+    if not self:completed() and not self._closing then
       self._closing = true
-
-      if awaiting then
-        M.await(function(on_child_close)
-          awaiting:close(on_child_close)
-        end)
-      end
-
-      self:_resume(CANCELLED)
-
-      return
+      self:_resume('closed')
     end
-
-    -- perf: avoid run() if there are no callbacks or awaiting
-    if callback or awaiting then
-      return M.run(close0):wait(callback)
-    else
-      --- @diagnostic disable-next-line: await-in-sync
-      return close0()
+    if callback then
+      self:wait(function()
+        callback()
+      end)
     end
   end
 
@@ -468,12 +448,6 @@ do --- Task
 
       --- @async
       local function finish0(...)
-        -- Keep hold of the child tasks so we can use `task:traceback()`
-        -- `task:traceback()`
-        if stat or getmetatable(task._awaiting) ~= Task then
-          task._awaiting = nil
-        end
-
         if not stat then
           -- Task had an error, close all children
           for _, child in pairs(task._children) do
@@ -490,11 +464,7 @@ do --- Task
         threads[task._thread] = nil
 
         if not stat then
-          if (...) == CANCELLED then
-            task._future:complete('closed')
-          else
-            task._future:complete((...))
-          end
+          task._future:complete((...))
         else
           task._future:complete(nil, ...)
         end
@@ -538,22 +508,8 @@ do --- Task
 
         if task:completed() then
           return
-        end
-
-        if ok == nil then
+        elseif ok == nil then
           next_args = pack_len(...)
-        elseif is_closable(r) then
-          -- We must close the closable child before we resume to ensure
-          -- all resources are collected.
-          local cargs = pack_len(...)
-
-          local close_ok, close_err = pcall(r.close, r, function()
-            task:_resume(unpack_len(cargs))
-          end)
-
-          if not close_ok then
-            task:_resume(close_err)
-          end
         else
           task:_resume(...)
         end
@@ -568,30 +524,62 @@ do --- Task
       return next_args
     end
 
+    --- @param task vim.async.Task
+    --- @param awaiting vim.async.Task|vim.async.Closable
+    --- @return boolean
+    local function can_close_awaiting(task, awaiting)
+      if getmetatable(awaiting) ~= Task then
+        return true
+      end
+
+      for _, child in pairs(task._children) do
+        if child == awaiting then
+          return true
+        end
+      end
+
+      return false
+    end
+
     --- @package
     --- @param ... any the first argument is the error, except for when the coroutine begins
     function Task:_resume(...)
       --- @type {[integer]: any, n: integer}?
       local args = pack_len(...)
 
+      -- Run this block in a while loop to run non-deferred continuations
+      -- without a new stack frame.
       while args do
-        if self._closing then
-          if coroutine.status(self._thread) == 'suspended' then
-            resume_co(
-              self,
-              check_resume(self._thread, coroutine.resume(self._thread, resume_marker, 'closed'))
-            )
+        -- TODO(lewis6991): Add a test that handles awaiting in the non-deferred
+        -- continuation
+
+        -- handling awaiting
+        local awaiting = self._awaiting
+        if awaiting and can_close_awaiting(self, awaiting) then
+          -- We must close the closable child before we resume to ensure
+          -- all resources are collected.
+          --- @diagnostic disable-next-line: param-type-not-match
+          local close_ok, close_err = pcall(awaiting.close, awaiting, function()
+            self._awaiting = nil
+            self:_resume(unpack_len(args))
+          end)
+
+          if close_ok then
+            return
           end
-          return
+
+          -- Close failed (synchronously) raise error
+          args = pack_len(close_err)
         end
 
-        if coroutine.status(self._thread) ~= 'suspended' then
+        if coroutine.status(self._thread) == 'dead' then
           -- Can only happen if coroutine.resume() is called outside of this
           -- function. When that happens check_yield() will error the coroutine
           -- which puts it in the 'dead' state.
-          finish(self, false, 'Unexpected coroutine.resume()')
+          finish(self, false, (...))
           return
         end
+
         local awaitable = resume_co(
           self,
           check_resume(
@@ -648,7 +636,7 @@ end
 
 --- Returns true if the current task has been cancelled.
 --- @return boolean
-function M.is_cancelled()
+function M.is_closing()
   local task = running()
   return task and task._closing or false
 end
@@ -708,9 +696,11 @@ do --- M.await()
   --- @overload async fun(argc: integer, func: (fun(...:T..., callback: fun(...:R...)): vim.async.Closable?), ...:T...): R...
   --- @overload async fun(task: vim.async.Task<R>): R...
   function M.await(...)
-    assert(running(), 'Not in async context')
+    local task = running()
+    assert(task, 'Not in async context')
 
-    if M.is_cancelled() then
+    -- TODO(lewis6991): needs test coverage. Happens when a task pcalls an await
+    if task._closing then
       error('closed', 0)
     end
 

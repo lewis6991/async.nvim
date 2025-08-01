@@ -379,12 +379,33 @@ stack traceback:
     local co --- @type thread
     local task = run(function()
       co = coroutine.running()
-      Async.sleep(1)
+
+      -- Run eternity() to make sure it's timer is cleaned up
+      -- when the task is closed
+      eternity()
     end)
+
     local status, err = coroutine.resume(co)
     assert(not status, 'Expected coroutine.resume to fail')
-    assert(err:match('Unexpected coroutine.resume%(%)'), err)
+    eq(err, 'Unexpected coroutine.resume()')
     check_task_err(task, 'Unexpected coroutine.resume%(%)')
+  end)
+
+  -- Same as above, but task is waiting on a detached task
+  it_exec('does not allow coroutine.resume(2)', function()
+    local t = run(eternity)
+
+    local co --- @type thread
+    local task = run(function()
+      co = coroutine.running()
+      await(t)
+    end)
+
+    local status, err = coroutine.resume(co)
+    assert(not status, 'Expected coroutine.resume to fail')
+    eq(err, 'Unexpected coroutine.resume()')
+    check_task_err(task, 'Unexpected coroutine.resume%(%)')
+    t:close()
   end)
 
   it_exec('does not need new stack frame for non-deferred continuations', function()
@@ -406,31 +427,21 @@ stack traceback:
   end)
 
   it_exec('does not close child tasks created outside of parent', function()
-    local t1 = run(function()
-      Async.sleep(10)
-    end)
+    local t1 = run(Async.sleep, 10)
 
     local t2 --- @type vim.async.Task
     local t3 --- @type vim.async.Task
 
     local parent = run(function()
-      t2 = run(function()
-        Async.sleep(10)
-      end)
-
-      t3 = run(function()
-        Async.sleep(10)
-      end):detach()
-
-      -- t1 create outside parent, cancellation will not propagate to it
-      await(t1)
-
       -- t2 created inside parent, cancellation will propagate to it
-      await(t2)
+      t2 = run(Async.sleep, 10)
 
       -- t3 created inside parent, but is detached, cancellation will not
       -- propagate to it
-      await(t3)
+      t3 = run(Async.sleep, 10):detach()
+
+      -- t1 created outside parent, cancellation will not propagate to it
+      await(t1)
     end)
 
     parent:close()
