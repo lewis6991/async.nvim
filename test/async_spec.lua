@@ -46,14 +46,16 @@ describe('async', function()
       end
 
       function _G.eq(expected, actual, msg)
-        assert(
-          vim.deep_equal(expected, actual),
-          ('%s\nactual: %s\nexpected: %s'):format(
-            msg or 'Mismatch:',
-            vim.inspect(actual),
-            vim.inspect(expected)
+        if not vim.deep_equal(expected, actual) then
+          error(
+            ('%s\nactual: %s\nexpected: %s'):format(
+              msg or 'Mismatch:',
+              vim.inspect(actual),
+              vim.inspect(expected)
+            ),
+            2
           )
-        )
+        end
       end
 
       --- @async
