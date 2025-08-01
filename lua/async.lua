@@ -21,9 +21,9 @@
 --- 5. Concurrency Utilities:
 ---    - [vim.async.iter()]: Iterates over multiple tasks, yielding their results as
 ---      they complete.
----    - [vim.async.join()]: Waits for all tasks to complete and collects their
+---    - [vim.async.await_all()]: Waits for all tasks to complete and collects their
 ---      results.
----    - [vim.async.joinany()]: Waits for the first task to complete and returns its
+---    - [vim.async.await_any()]: Waits for the first task to complete and returns its
 ---      result.
 ---
 --- 6. Synchronization Primitives:
@@ -880,7 +880,7 @@ end
 --- end)
 ---
 --- vim.async.run(function()
----   local results = vim.async.join({task1, task2, task3})
+---   local results = vim.async.await_all({task1, task2, task3})
 ---   print(vim.inspect(results))
 --- end)
 --- ```
@@ -896,7 +896,7 @@ end
 --- @async
 --- @param tasks vim.async.Task<any>[]
 --- @return table<integer,[any?,...?]>
-function M.join(tasks)
+function M.await_all(tasks)
   assert(running(), 'Not in async context')
   local iter = M.iter(tasks)
   local results = {} --- @type table<integer,table>
@@ -919,7 +919,7 @@ end
 --- @return integer? index
 --- @return any? err
 --- @return any ... results
-function M.joinany(tasks)
+function M.await_any(tasks)
   return M.iter(tasks)()
 end
 
@@ -941,7 +941,7 @@ end
 --- @param task vim.async.Task<R>
 function M.timeout(duration, task)
   local timer = M.run(M.await, 2, vim.defer_fn, duration)
-  if M.joinany({ task, timer }) == 2 then
+  if M.await_any({ task, timer }) == 2 then
     -- Timer finished first, cancel the task
     task:close()
     error('timeout')
@@ -1331,7 +1331,7 @@ do --- M.semaphore()
   ---     end)
   ---   end
   ---
-  ---   vim.async.join(tasks)
+  ---   vim.async.await_all(tasks)
   ---   assert(value <= 2)
   --- end)
   --- ```

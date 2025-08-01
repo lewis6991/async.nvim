@@ -343,7 +343,7 @@ stack traceback:
             end)
           end)
         end
-        Async.join(tasks)
+        Async.await_all(tasks)
       end):wait()
 
       eq({
@@ -527,7 +527,7 @@ stack traceback:
       local sem = Async.semaphore(1)
       local p1 = run(player, 'ping', sem)
       local p2 = run(player, 'pong', sem)
-      Async.join({ p1, p2 })
+      Async.await_all({ p1, p2 })
     end):wait()
 
     eq({ 'ping', 'pong', 'ping', 'pong', 'ping', 'pong', 'ping', 'pong', 'ping', 'pong' }, msgs)
@@ -586,7 +586,7 @@ stack traceback:
     check_task_err(task, 'closed')
   end)
 
-  it_exec('join tasks with cancellation', function()
+  it_exec('await_all tasks with cancellation', function()
     local tasks = {} --- @type vim.async.Task<any>[]
 
     for i = 1, 4 do
@@ -601,7 +601,7 @@ stack traceback:
     assert(tasks[2]):close()
 
     local results = run(function()
-      return Async.join(tasks)
+      return Async.await_all(tasks)
     end):wait(1000)
 
     for _, r in ipairs(results) do

@@ -3,7 +3,6 @@ async-error-handling	lua-async.txt	/*async-error-handling*
 async-function	lua-async.txt	/*async-function*
 async-task-ownership	lua-async.txt	/*async-task-ownership*
 vim.async	lua-async.txt	/*vim.async*
-vim.async.Cancelled	lua-async.txt	/*vim.async.Cancelled*
 vim.async.Closable	lua-async.txt	/*vim.async.Closable*
 vim.async.Closable.close	lua-async.txt	/*vim.async.Closable.close*
 vim.async.Event	lua-async.txt	/*vim.async.Event*
@@ -37,12 +36,12 @@ vim.async.Task:status()	lua-async.txt	/*vim.async.Task:status()*
 vim.async.Task:traceback()	lua-async.txt	/*vim.async.Task:traceback()*
 vim.async.Task:wait()	lua-async.txt	/*vim.async.Task:wait()*
 vim.async.await()	lua-async.txt	/*vim.async.await()*
+vim.async.await_all()	lua-async.txt	/*vim.async.await_all()*
+vim.async.await_any()	lua-async.txt	/*vim.async.await_any()*
 vim.async.event()	lua-async.txt	/*vim.async.event()*
 vim.async.future()	lua-async.txt	/*vim.async.future()*
-vim.async.is_cancelled()	lua-async.txt	/*vim.async.is_cancelled()*
+vim.async.is_closing()	lua-async.txt	/*vim.async.is_closing()*
 vim.async.iter()	lua-async.txt	/*vim.async.iter()*
-vim.async.join()	lua-async.txt	/*vim.async.join()*
-vim.async.joinany()	lua-async.txt	/*vim.async.joinany()*
 vim.async.queue()	lua-async.txt	/*vim.async.queue()*
 vim.async.run()	lua-async.txt	/*vim.async.run()*
 vim.async.semaphore()	lua-async.txt	/*vim.async.semaphore()*
