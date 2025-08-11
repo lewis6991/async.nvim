@@ -220,7 +220,7 @@ local main = async.run(function()
     local child2 = async.run(longRunningChildTask, 2)
 
     -- Await the children
-    _ = async.join({ child1, child2 })
+    _ = async.join_all({ child1, child2 })
 
     print('Parent Task: All children should be done/cancelled.')
   end)

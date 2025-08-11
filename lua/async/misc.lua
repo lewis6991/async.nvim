@@ -24,17 +24,17 @@ function M.join_n_1(max_jobs, funs)
 
   -- As tasks finish, add new ones
   for i = max_jobs + 1, #funs do
-    local finished = async.joinany(running)
+    local finished = async.await_any(running)
     --- @cast finished -?
     running[finished] = async.run(assert(funs[i]))
   end
 
   -- Wait for all tasks to finish
-  async.join(running)
+  async.await_all(running)
 end
 
 --- Like async.join, but with a limit on the number of concurrent tasks.
---- (different implementation and doesn't use `async.joinany()`)
+--- (different implementation and doesn't use `async.await_any()`)
 --- @async
 --- @param max_jobs integer
 --- @param funs (async fun())[]
@@ -85,7 +85,7 @@ function M.join_n_3(max_jobs, funs)
     end)
   end
 
-  async.join(tasks)
+  async.await_all(tasks)
 end
 
 return M
