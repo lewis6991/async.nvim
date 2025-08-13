@@ -227,6 +227,9 @@ end
 --- @field package _future vim.async.Future<R>
 --- @field package _closing boolean
 ---
+--- Initial arguments to start the Task. Cleared when task is started.
+--- @field package _start_args? any[]
+---
 --- Reference to parent to handle attaching/detaching.
 --- @field package _parent? vim.async.Task<any>
 --- @field package _parent_children_idx? integer
@@ -618,6 +621,15 @@ do --- Task
   end
 end
 
+--- Start the task if it has not been started yet.
+--- @param task vim.async.Task
+local function _try_start(task)
+  if task._start_args then
+    task._start_args = nil
+    task:_resume(unpack_len(task._start_args))
+  end
+end
+
 --- Run a function in an async context, asynchronously.
 ---
 --- Returns an [vim.async.Task] object which can be used to wait or await the result
@@ -642,7 +654,14 @@ function M.run(func, ...)
   -- TODO(lewis6991): add task names
   local task = Task._new(func)
   task:_attach(running())
-  task:_resume(...)
+  task._start_args = pack_len(...)
+
+  -- Schedule the task to start in the next event loop iteration.
+  -- May be started sooner if the task is awaited
+  vim.schedule(function()
+    _try_start(task)
+  end)
+
   return task
 end
 
@@ -724,6 +743,8 @@ do --- M.await()
     elseif type(arg1) == 'function' then
       fn = norm_cb_fun(1, arg1)
     elseif getmetatable(arg1) == Task then
+      --- @cast arg1 vim.async.Task<R...>
+      _try_start(arg1)
       fn = function(callback)
         arg1:wait(callback)
         return arg1
