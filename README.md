@@ -11,6 +11,25 @@ Async library for Neovim plugins
 - Tasks are only ever created with `async.run()`
 - Cancellation/closing propagates downwards and errors propagate upwards
 
+## Concepts
+
+### Async functions
+
+A regular lua function that has some codepath to `await()`.
+`await()` suspends execution of the function and waits for it to be continued at a later point.
+Because of this async functions need to be executed within an async context.
+
+### Callback functions
+
+Aka continutation-passing style (CPS)
+
+A normal Lua function that has some form of callback argument.
+Instead of returning the function results using `return` , results are passed by calling the callback function.
+
+### Tasks
+
+Tasks are handles to asynchronous functions started by `async.run()`.
+
 ## Example: From Callbacks to Async
 
 Suppose you have a function that runs a system process using callbacks:
