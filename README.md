@@ -4,6 +4,13 @@ Async library for Neovim plugins
 
 🚧 WIP and Under Construction 🚧
 
+## Principles
+
+- Errors never pass silently and are always propagated.
+- Tasks always run to completion and are never orphaned unless explicitly detached.
+- Tasks are only ever created with `async.run()`
+- Cancellation/closing propagates downwards and errors propagate upwards
+
 ## Example: From Callbacks to Async
 
 Suppose you have a function that runs a system process using callbacks:

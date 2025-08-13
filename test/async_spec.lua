@@ -26,6 +26,7 @@ describe('async', function()
       _G.wrap = Async.wrap
       _G.uv_handles = setmetatable({}, { __mode = 'v' })
 
+      --- Keep track of uv handles so we can ensure they are closed
       --- @generic T
       --- @param name string
       --- @param handle T?
@@ -42,7 +43,7 @@ describe('async', function()
         local ok, err = task:pwait(10)
         if ok then
           error('Expected task to error, but it completed successfully', 2)
-        elseif not err:match(pat) then
+        elseif not err:match('^' .. pat .. '$') then
           error('Unexpected error: ' .. task:traceback(err), 2)
         end
         return err
@@ -84,12 +85,11 @@ describe('async', function()
     end)
   end)
 
-  it_exec('error stack trace on synchronous wait', function()
+  it_exec('can error stack trace on sync wait', function()
     local task = run(function()
       error('SYNC ERR')
     end)
-    local err = check_task_err(task, 'SYNC ERR')
-    assert(err:match('async_spec.lua:%d+:'), 'missing stacktrace file')
+    check_task_err(task, 'test/async_spec.lua:%d+: SYNC ERR')
   end)
 
   it_exec('can await a uv callback function', function()
@@ -109,10 +109,10 @@ describe('async', function()
       assert(code2 == 0)
       await(vim.schedule)
 
-      return true --[[@as boolean]]
+      return true
     end):wait(1000)
 
-    assert(done)
+    eq(true, done)
   end)
 
   it_exec('can close tasks', function()
@@ -121,8 +121,8 @@ describe('async', function()
     check_task_err(task, 'closed')
   end)
 
-  -- Same as test above but uses async and wrap
   it_exec('can close wrapped tasks', function()
+    -- Same as test above but uses async and wrap
     local wfn = wrap(1, function(_callback)
       -- Never call callback
       return add_handle('timer', vim.uv.new_timer()) --[[@as vim.async.Closable]]
@@ -185,7 +185,7 @@ describe('async', function()
       error('GOT HERE')
     end)
 
-    check_task_err(task, 'GOT HERE')
+    check_task_err(task, 'test/async_spec.lua:%d+: GOT HERE')
   end)
 
   it_exec('handles tasks that complete', function()
@@ -222,7 +222,7 @@ describe('async', function()
     assert(did_cb)
   end)
 
-  it_exec('can iterate tasks', function()
+  it_exec('can iterate detached tasks', function()
     local tasks = {} --- @type vim.async.Task<any>[]
 
     local expected = {} --- @type table[]
@@ -234,17 +234,91 @@ describe('async', function()
         end
         return 'FINISH', i
       end)
-      expected[i] = { nil, { 'FINISH', i } }
+      expected[i] = { 'FINISH', i }
     end
 
     local results = {} --- @type table[]
     run(function()
-      for i, err, r1, r2 in Async.iter(tasks) do
-        results[i] = { err, { r1, r2 } }
+      for i, r1, r2 in Async.iter(tasks) do
+        results[i] = { r1, r2 }
       end
     end):wait(1000)
 
     eq(expected, results)
+  end)
+
+  it_exec('can handle errors when iterating detached tasks', function()
+    --- - Launch 10 detached tasks and iterate them
+    --- - Task 3 will error
+    --- - Error will propagate to the parent task
+    --- - Results will only contain that have completed
+    --- - Remaining tasks will **NOT** be closed
+    local results = {} --- @type table[]
+
+    local tasks = {} --- @type vim.async.Task<any>[]
+    for i = 1, 10 do
+      tasks[i] = run(function()
+        -- TODO(lewis6991): test without this
+        await(vim.schedule)
+
+        if i == 3 then
+          error('ERROR IN TASK ' .. i)
+        end
+        return 'FINISH', i
+      end)
+    end
+
+    local task = run(function()
+      for i, r1, r2 in Async.iter(tasks) do
+        results[i] = { r1, r2 }
+      end
+    end)
+
+    check_task_err(task, 'iter error%[index:3%]: test/async_spec.lua:%d+: ERROR IN TASK 3')
+
+    eq({
+      { 'FINISH', 1 },
+      { 'FINISH', 2 },
+    }, results)
+  end)
+
+  it_exec('can handle errors when iterating child tasks', function()
+    --- - Launch 10 tasks and iterate them
+    --- - Task 3 will error
+    --- - Error will propagate to the parent task
+    --- - Results will only contain tasks that completed successfully
+    --- - Remaining tasks will be closed
+    local results = {} --- @type table[]
+
+    local tasks = {} --- @type vim.async.Task<any>[]
+    local task = run(function()
+      for i = 1, 10 do
+        tasks[i] = run(function()
+          -- TODO(lewis6991): test without this
+          await(vim.schedule)
+
+          if i == 3 then
+            error('ERROR IN TASK ' .. i)
+          end
+          return 'FINISH', i
+        end)
+      end
+
+      for i, r1, r2 in Async.iter(tasks) do
+        results[i] = { r1, r2 }
+      end
+    end)
+
+    check_task_err(task, 'child error: test/async_spec.lua:%d+: ERROR IN TASK 3')
+
+    for i = 4, #tasks do
+      check_task_err(tasks[i], 'closed')
+    end
+
+    eq({
+      { 'FINISH', 1 },
+      { 'FINISH', 2 },
+    }, results)
   end)
 
   it_exec('can await a run task', function()
@@ -264,40 +338,39 @@ describe('async', function()
         error('ERROR')
       end)
     end)
-    check_task_err(task, 'ERROR')
+    check_task_err(task, 'test/async_spec.lua:%d+: ERROR')
   end)
 
   it_exec('can pcall errors in wrapped functions', function()
     local task = run(function()
       return pcall(function()
         await(function(_callback)
-          error('ERROR', 0)
+          error('ERROR')
         end)
       end)
     end)
     local ok, msg = task:wait()
-    assert(not ok, 'Expected error, got success')
-    eq(msg, 'ERROR')
+    assert(not ok and msg, 'Expected error, got success')
+    assert(msg:match('^test/async_spec.lua:%d+: ERROR$'), 'Got unexpected error: ' .. msg)
   end)
 
-  it_exec('iter tasks followed by error', function()
+  it_exec('can iter tasks followed by error', function()
     local task = run(function()
       await(vim.schedule)
       return 'FINISH', 1
     end)
 
-    local expected = { { nil, { 'FINISH', 1 } } }
+    local expected = { { 'FINISH', 1 } }
 
     local results = {} --- @type table[]
     local task2 = run(function()
-      for i, err, r1, r2 in Async.iter({ task }) do
-        assert(not err, err)
-        results[i] = { err, { r1, r2 } }
+      for i, r1, r2 in Async.iter({ task }) do
+        results[i] = { r1, r2 }
       end
       error('GOT HERE')
     end)
 
-    check_task_err(task2, 'async_spec.lua:%d+: GOT HERE')
+    check_task_err(task2, 'test/async_spec.lua:%d+: GOT HERE')
     eq(expected, results)
   end)
 
@@ -330,7 +403,7 @@ describe('async', function()
     -- >         test/async_spec.lua:310: in function <test/async_spec.lua:297>
     -- >         [string "<nvim>"]:2: in main chunk
 
-    local err = check_task_err(task, 'GOT HERE')
+    local err = check_task_err(task, 'test/async_spec.lua:%d+: GOT HERE')
 
     local m = [[test/async_spec.lua:%d+: GOT HERE
 stack traceback:
@@ -390,7 +463,7 @@ stack traceback:
     local task = run(function()
       coroutine.yield('This will cause an error.')
     end)
-    check_task_err(task, 'Unexpected coroutine.yield()')
+    check_task_err(task, 'Unexpected coroutine.yield().*')
   end)
 
   it_exec('does not allow coroutine.resume', function()
@@ -471,11 +544,13 @@ stack traceback:
   end)
 
   it_exec('automatically awaits child tasks', function()
+    -- child tasks created inside a parent task are automatically
+    -- awaited when the parent task is finished.
     local child1, child2 --- @type vim.async.Task, vim.async.Task
     local main = run(function()
       child1 = run(Async.sleep, 10)
       child2 = run(Async.sleep, 10)
-      -- do no await child1 or child2
+      -- do not await child1 or child2
     end)
 
     main:wait()
@@ -561,10 +636,10 @@ stack traceback:
 
     -- TODO(lewis6991): error should be clearer that task1 was closed and not
     -- task2
-    check_task_err(task2, '^closed')
+    check_task_err(task2, 'closed')
   end)
 
-  it_exec('iter tasks with cancellation', function()
+  it_exec('can iter tasks with cancellation', function()
     local tasks = {} --- @type vim.async.Task<any>[]
 
     for i = 1, 4 do
@@ -579,21 +654,24 @@ stack traceback:
     assert(tasks[2]):close()
 
     local results = {} --- @type table[]
-    run(function()
-      for i, err, r1, r2 in Async.iter(tasks) do
-        results[i] = { err, r1 and { r1, r2 } or nil }
+    local task = run(function()
+      for i, r1, r2 in Async.iter(tasks) do
+        results[i] = { r1, r2 }
       end
-    end):wait(1000)
+    end)
 
+    check_task_err(task, 'iter error%[index:2%]: closed')
+
+    -- Task 2 is closed so never returns a result. Note task 2 isn't attached to
+    -- the parent task so is close is not propagated
     eq({
-      [1] = { nil, { 'FINISH', 1 } },
-      [2] = { 'closed', nil },
-      [3] = { nil, { 'FINISH', 3 } },
-      [4] = { nil, { 'FINISH', 4 } },
+      [1] = { 'FINISH', 1 },
+      [3] = { 'FINISH', 3 },
+      [4] = { 'FINISH', 4 },
     }, results)
   end)
 
-  it_exec('iter tasks with garbage collection', function()
+  it_exec('can iter tasks with garbage collection', function()
     --- @param task vim.async.Task
     --- @return integer
     local function get_task_callback_count(task)
@@ -606,15 +684,15 @@ stack traceback:
     local t = run(function()
       local i = Async.iter({ task })()
       eq(get_task_callback_count(task), 1, 'task should have one callback')
-      eq(i, 1)
+      -- task is closed so should not return a result when iterated
+      eq(nil, i)
       collectgarbage('collect')
       eq(get_task_callback_count(task), 0, 'task should have no callbacks')
     end)
 
     task:close()
 
-    t:wait()
-
+    check_task_err(t, 'iter error%[index:1%]: closed')
     check_task_err(task, 'closed')
   end)
 
@@ -632,20 +710,8 @@ stack traceback:
 
     assert(tasks[2]):close()
 
-    local results = run(function()
-      return Async.await_all(tasks)
-    end):wait(1000)
-
-    for _, r in ipairs(results) do
-      r.n = nil
-    end
-
-    eq({
-      [1] = { nil, 'FINISH', 1 },
-      [2] = { 'closed' },
-      [3] = { nil, 'FINISH', 3 },
-      [4] = { nil, 'FINISH', 4 },
-    }, results)
+    local t = run(Async.await_all, tasks)
+    check_task_err(t, 'iter error%[index:2%]: closed')
   end)
 
   it_exec('handles when a floating child errors', function()
@@ -656,7 +722,7 @@ stack traceback:
       end)
     end)
 
-    check_task_err(parent, 'test/async_spec.lua:%d+: CHILD ERROR')
+    check_task_err(parent, 'child error: test/async_spec.lua:%d+: CHILD ERROR')
   end)
 
   it_exec('handles when a floating child errors and parent errors', function()
@@ -669,5 +735,11 @@ stack traceback:
     end)
 
     check_task_err(parent, 'test/async_spec.lua:%d+: PARENT ERROR')
+  end)
+
+  it_exec('should not close the parent task when child task is closed', function()
+    run(function()
+      run(eternity):close()
+    end):wait()
   end)
 end)

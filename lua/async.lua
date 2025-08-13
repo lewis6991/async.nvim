@@ -190,9 +190,7 @@ local yield_error = 'Unexpected coroutine.yield()'
 local function check_yield(marker, err, ...)
   if marker ~= resume_marker then
     local task = assert(running(), 'Not in async context')
-    vim.schedule(function()
-      task:_resume(resume_error)
-    end)
+    task:_raise(resume_error)
     -- Return an error to the caller. This will also leave the task in a dead
     -- and unfinshed state
     error(resume_error, 0)
@@ -405,6 +403,19 @@ do --- Task
     return self
   end
 
+  --- @package
+  --- @param err string
+  function Task:_raise(err)
+    if self:status() == 'running' then
+      -- TODO(lewis6991): is there a better way to do this?
+      vim.schedule(function()
+        self:_resume(err)
+      end)
+    else
+      self:_resume(err)
+    end
+  end
+
   --- Close the task and all of its children.
   --- If callback is provided it will run asynchronously,
   --- else it will run synchronously.
@@ -413,7 +424,7 @@ do --- Task
   function Task:close(callback)
     if not self:completed() and not self._closing then
       self._closing = true
-      self:_resume('closed')
+      self:_raise('closed')
     end
     if callback then
       self:wait(function()
@@ -428,35 +439,32 @@ do --- Task
     --- @param task vim.async.Task<R>
     --- @param stat boolean
     --- @param ...R... result
-    local function finish(task, stat, ...)
+    local function finish_task(task, stat, ...)
       local has_children = next(task._children) ~= nil
 
       --- @async
       local function finish0(...)
-        local child_err --- @type any?
         -- TODO(lewis6991): should we collect all errors?
         for _, child in pairs(task._children) do
-          if not stat or child_err then
+          if not stat then
             child:close()
-            pcall(M.await, child)
-          else
-            local ok, err = pcall(M.await, child)
-            if not ok then
-              -- Only capture the first error, but still await the rest of the
-              -- children
-              child_err = err
-            end
           end
+          -- If child fails then it will resume the parent with an error
+          -- which is handled below
+          pcall(M.await, child)
         end
 
+        local parent = task._parent
         task:detach()
 
         threads[task._thread] = nil
 
-        if child_err then
-          task._future:complete(child_err)
-        elseif not stat then
-          task._future:complete((...) or 'unknown error')
+        if not stat then
+          local err = (...) or 'unknown error'
+          task._future:complete(err)
+          if parent and not task._closing then
+            parent:_raise('child error: ' .. err)
+          end
         else
           task._future:complete(nil, ...)
         end
@@ -464,7 +472,7 @@ do --- Task
 
       -- Only run finish0() if there are children, otherwise
       -- this will cause infinite recursion:
-      --   M.run() -> task:_resume() -> resume_co() -> finish() -> M.run()
+      --   M.run() -> task:_resume() -> resume_co() -> finish_task() -> M.run()
       if has_children then
         M.run(finish0, ...)
       else
@@ -577,12 +585,12 @@ do --- Task
           -- Can only happen if coroutine.resume() is called outside of this
           -- function. When that happens check_yield() will error the coroutine
           -- which puts it in the 'dead' state.
-          finish(self, false, (...))
+          finish_task(self, false, (...))
           return
         end
 
         local awaitable = handle_co_resume(self._thread, function(stat, ...)
-          finish(self, stat, ...)
+          finish_task(self, stat, ...)
         end, coroutine.resume(self._thread, resume_marker, unpack_len(args)))
 
         if not awaitable then
@@ -628,7 +636,7 @@ end
 --- @generic T, R
 --- @param func async fun(...:T...): R... Function to run in an async context
 --- @param ... T... Arguments to pass to the function
---- @return vim.async.Task<R>
+--- @return vim.async.Task<R...>
 function M.run(func, ...)
   -- TODO(lewis6991): add task names
   local task = Task._new(func)
@@ -766,6 +774,57 @@ function M.wrap(argc, func)
   end
 end
 
+--- @async
+--- @generic R
+--- @param tasks vim.async.Task<R>[] A list of tasks to wait for and iterate over.
+--- @return async fun(): (integer?, any?, ...R) iterator that yields the index, error, and results of each task.
+local function iter(tasks)
+  -- TODO(lewis6991): do not return err, instead raise any errors as they occur
+  assert(running(), 'Not in async context')
+
+  local remaining = #tasks
+  local queue = M._queue()
+
+  -- Keep track of the callbacks so we can remove them when the iterator
+  -- is garbage collected.
+  --- @type table<vim.async.Task<any>,function>
+  local task_cbs = setmetatable({}, { __mode = 'v' })
+
+  -- Wait on all the tasks. Keep references to the task futures and wait
+  -- callbacks so we can remove them when the iterator is garbage collected.
+  for i, task in ipairs(tasks) do
+    local function cb(err, ...)
+      remaining = remaining - 1
+      queue:put_nowait(pack_len(err, i, ...))
+      if remaining == 0 then
+        queue:put_nowait()
+      end
+    end
+
+    task_cbs[task] = cb
+    task:wait(cb)
+  end
+
+  --- @async
+  return gc_fun(function()
+    local r = queue:get()
+    if r then
+      local err = r[1]
+      if err then
+        -- -- Note: if the task was a child, then an error should have already been
+        -- -- raised in finish_task(). This should only trigger to detached tasks.
+        -- assert(assert(tasks[r[2]])._parent == nil)
+        error(('iter error[index:%d]: %s'):format(r[2], r[1]), 3)
+      end
+      return unpack_len(r, 2)
+    end
+  end, function()
+    for t, tcb in pairs(task_cbs) do
+      t:_unwait(tcb)
+    end
+  end)
+end
+
 --- Waits for multiple tasks to finish and iterates over their results.
 ---
 --- This function allows you to run multiple asynchronous tasks concurrently and
@@ -809,40 +868,7 @@ end
 --- @param tasks vim.async.Task<R>[] A list of tasks to wait for and iterate over.
 --- @return async fun(): (integer?, any?, ...R) iterator that yields the index, error, and results of each task.
 function M.iter(tasks)
-  -- TODO(lewis6991): do not return err, instead raise any errors as they occur
-  assert(running(), 'Not in async context')
-
-  local remaining = #tasks
-  local queue = M._queue()
-
-  -- Keep track of the callbacks so we can remove them when the iterator
-  -- is garbage collected.
-  --- @type table<vim.async.Task<any>,function>
-  local task_cbs = setmetatable({}, { __mode = 'v' })
-
-  -- Wait on all the tasks. Keep references to the task futures and wait
-  -- callbacks so we can remove them when the iterator is garbage collected.
-  for i, task in ipairs(tasks) do
-    local function cb(err, ...)
-      remaining = remaining - 1
-      queue:put_nowait(pack_len(i, err, ...))
-      if remaining == 0 then
-        queue:put_nowait()
-      end
-    end
-
-    task_cbs[task] = cb
-    task:wait(cb)
-  end
-
-  --- @async
-  return gc_fun(function()
-    return unpack_len(queue:get())
-  end, function()
-    for t, tcb in pairs(task_cbs) do
-      t:_unwait(tcb)
-    end
-  end)
+  return iter(tasks)
 end
 
 --- Wait for all tasks to finish and return their results.
@@ -880,7 +906,7 @@ end
 --- @return table<integer,[any?,...?]>
 function M.await_all(tasks)
   assert(running(), 'Not in async context')
-  local iter = M.iter(tasks)
+  local itr = iter(tasks)
   local results = {} --- @type table<integer,table>
 
   local function collect(i, ...)
@@ -890,7 +916,7 @@ function M.await_all(tasks)
     return i ~= nil
   end
 
-  while collect(iter()) do
+  while collect(itr()) do
   end
 
   return results
@@ -902,7 +928,7 @@ end
 --- @return any? err
 --- @return any ... results
 function M.await_any(tasks)
-  return M.iter(tasks)()
+  return iter(tasks)()
 end
 
 --- @async
@@ -924,7 +950,11 @@ end
 --- @param task vim.async.Task<R>
 --- @return R
 function M.timeout(duration, task)
-  local timer = M.run(M.await, 2, vim.defer_fn, duration)
+  local timer = M.run(M.await, function(callback)
+    local t = assert(vim.uv.new_timer())
+    t:start(duration, 0, callback)
+    return t
+  end)
   if M.await_any({ task, timer }) == 2 then
     -- Timer finished first, cancel the task
     task:close()
