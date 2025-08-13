@@ -424,9 +424,10 @@ do --- Task
 
   do -- Task:_resume()
     --- Should only be called in Task:_resume_co()
-    --- @param task vim.async.Task
+    --- @generic R
+    --- @param task vim.async.Task<R>
     --- @param stat boolean
-    --- @param ... any result
+    --- @param ...R... result
     local function finish(task, stat, ...)
       local has_children = next(task._children) ~= nil
 
@@ -646,8 +647,8 @@ end
 do --- M.await()
   --- @generic T, R
   --- @param argc integer
-  --- @param fun fun(...: T, callback: fun(...: R...))
-  --- @param ... any func arguments
+  --- @param fun fun(...: T..., callback: fun(...: R...))
+  --- @param ... T... func arguments
   --- @return fun(callback: fun(...: R...))
   local function norm_cb_fun(argc, fun, ...)
     local args = pack_len(...)
