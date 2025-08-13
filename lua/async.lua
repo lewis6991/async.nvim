@@ -809,10 +809,6 @@ function M.iter(tasks)
   assert(running(), 'Not in async context')
 
   local results = {} --- @type [integer, any, ...any][]
-
-  -- Iter blocks in an async context so only one waiter is needed
-  local waiter = nil --- @type fun(index: integer?, err?: any, ...: any)?
-
   local remaining = #tasks
 
   -- Keep track of the callbacks so we can remove them when the iterator
@@ -820,47 +816,36 @@ function M.iter(tasks)
   --- @type table<vim.async.Task<any>,function>
   local task_cbs = setmetatable({}, { __mode = 'v' })
 
+  local event = M.event()
+
   -- Wait on all the tasks. Keep references to the task futures and wait
   -- callbacks so we can remove them when the iterator is garbage collected.
   for i, task in ipairs(tasks) do
     local function cb(err, ...)
-      local callback = waiter
-
-      -- Clear waiter before calling it
-      waiter = nil
-
       remaining = remaining - 1
-      if callback then
-        -- Iterator is waiting, yield to it
-        callback(i, err, ...)
-      else
-        -- Task finished before Iterator was called. Store results.
-        table.insert(results, pack_len(i, err, ...))
-      end
+      table.insert(results, pack_len(i, err, ...))
+      event:set()
     end
 
     task_cbs[task] = cb
     task:wait(cb)
   end
 
-  return gc_fun(
-    M.wrap(1, function(callback)
-      if next(results) then
-        local res = table.remove(results, 1)
-        callback(unpack_len(res))
-      elseif remaining == 0 then
-        callback() -- finish
-      else
-        assert(not waiter, 'internal error: waiter already set')
-        waiter = callback
+  return gc_fun(function()
+    if not next(results) then
+      event:clear()
+      if remaining == 0 then
+        return
       end
-    end),
-    function()
-      for t, tcb in pairs(task_cbs) do
-        t:_unwait(tcb)
-      end
+      event:wait()
     end
-  )
+    local r = table.remove(results, 1)
+    return unpack_len(r)
+  end, function()
+    for t, tcb in pairs(task_cbs) do
+      t:_unwait(tcb)
+    end
+  end)
 end
 
 --- Wait for all tasks to finish and return their results.
