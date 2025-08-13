@@ -638,6 +638,7 @@ end
 --- @param ... T... Arguments to pass to the function
 --- @return vim.async.Task<R...>
 function M.run(func, ...)
+  vim.validate('func', func, 'callable')
   -- TODO(lewis6991): add task names
   local task = Task._new(func)
   task:_attach(running())
@@ -766,8 +767,8 @@ end
 --- @param func fun(...: T, callback: fun(...: R)): vim.async.Closable?
 --- @return async fun(...:T): R
 function M.wrap(argc, func)
-  assert(type(argc) == 'number')
-  assert(type(func) == 'function')
+  vim.validate('argc', argc, 'number')
+  vim.validate('func', func, 'callable')
   --- @async
   return function(...)
     return M.await(argc, func, ...)
@@ -779,6 +780,8 @@ end
 --- @param tasks vim.async.Task<R>[] A list of tasks to wait for and iterate over.
 --- @return async fun(): (integer?, any?, ...R) iterator that yields the index, error, and results of each task.
 local function iter(tasks)
+  vim.validate('tasks', tasks, 'table')
+
   -- TODO(lewis6991): do not return err, instead raise any errors as they occur
   assert(running(), 'Not in async context')
 
@@ -934,6 +937,7 @@ end
 --- @async
 --- @param duration integer ms
 function M.sleep(duration)
+  vim.validate('duration', duration, 'number')
   M.await(1, function(callback)
     -- TODO(lewis6991): should return the result of defer_fn here.
     vim.defer_fn(callback, duration)
@@ -950,6 +954,8 @@ end
 --- @param task vim.async.Task<R>
 --- @return R
 function M.timeout(duration, task)
+  vim.validate('duration', duration, 'number')
+  vim.validate('task', task, 'table')
   local timer = M.run(M.await, function(callback)
     local t = assert(vim.uv.new_timer())
     t:start(duration, 0, callback)
@@ -1352,6 +1358,7 @@ do --- M.semaphore()
   --- @param permits? integer (default: 1)
   --- @return vim.async.Semaphore
   function M.semaphore(permits)
+    vim.validate('permits', permits, 'number', true)
     permits = permits or 1
     local obj = setmetatable({
       _max_permits = permits,
