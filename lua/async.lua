@@ -258,7 +258,7 @@ do --- Task
     local self = setmetatable({
       _closing = false,
       _thread = thread,
-      _future = M.future(),
+      _future = M._future(),
       _children = {},
       _children_idx = 0,
     }, Task)
@@ -816,7 +816,7 @@ function M.iter(tasks)
   --- @type table<vim.async.Task<any>,function>
   local task_cbs = setmetatable({}, { __mode = 'v' })
 
-  local event = M.event()
+  local event = M._event()
 
   -- Wait on all the tasks. Keep references to the task futures and wait
   -- callbacks so we can remove them when the iterator is garbage collected.
@@ -934,7 +934,7 @@ function M.timeout(duration, task)
   return M.await(task)
 end
 
-do --- M.future()
+do --- M._future()
   --- Future objects are used to bridge low-level callback-based code with
   --- high-level async/await code.
   --- @class vim.async.Future<R>
@@ -1031,7 +1031,7 @@ do --- M.future()
 
   --- Create a new future
   --- @return vim.async.Future
-  function M.future()
+  function M._future()
     return setmetatable({
       _callbacks = {},
       _callback_pos = 1,
@@ -1039,7 +1039,7 @@ do --- M.future()
   end
 end
 
-do --- M.event()
+do --- M._event()
   --- An event can be used to notify multiple tasks that some event has
   --- happened. An Event object manages an internal flag that can be set to true
   --- with the `set()` method and reset to `false` with the `clear()` method.
@@ -1122,7 +1122,7 @@ do --- M.event()
   ---  }
   --- ```
   --- @return vim.async.Event
-  function M.event()
+  function M._event()
     return setmetatable({
       _waiters = {},
       _is_set = false,
@@ -1130,7 +1130,7 @@ do --- M.event()
   end
 end
 
-do --- M.queue()
+do --- M._queue()
   --- @class vim.async.Queue
   --- @field private _non_empty vim.async.Event
   --- @field package _non_full vim.async.Event
@@ -1221,14 +1221,14 @@ do --- M.queue()
   --- ```
   --- @param max_size? integer The maximum number of items in the queue, defaults to no limit
   --- @return vim.async.Queue
-  function M.queue(max_size)
+  function M._queue(max_size)
     local self = setmetatable({
       _items = {},
       _left_i = 0,
       _right_i = 0,
       _max_size = max_size,
-      _non_empty = M.event(),
-      _non_full = M.event(),
+      _non_empty = M._event(),
+      _non_full = M._event(),
     }, Queue)
 
     self._non_full:set()
@@ -1327,7 +1327,7 @@ do --- M.semaphore()
     local obj = setmetatable({
       _max_permits = permits,
       _permits = permits,
-      _event = M.event(),
+      _event = M._event(),
     }, Semaphore)
     obj._event:set()
     return obj
