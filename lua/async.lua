@@ -183,6 +183,7 @@ local resume_error = 'Unexpected coroutine.resume()'
 local yield_error = 'Unexpected coroutine.yield()'
 
 --- @generic T
+--- @param marker any
 --- @param err? any
 --- @param ... T...
 --- @return T...
@@ -331,6 +332,7 @@ do --- Task
   end
 
   --- @param timeout integer?
+  --- @return boolean, R...
   function Task:pwait(timeout)
     vim.validate('timeout', timeout, 'number', true)
     return pcall(self.wait, self, timeout)
@@ -802,45 +804,39 @@ end
 --- ```
 ---
 --- @async
---- @param tasks vim.async.Task<any>[] A list of tasks to wait for and iterate over.
---- @return async fun(): (integer?, any?, ...any) iterator that yields the index, error, and results of each task.
+--- @generic R
+--- @param tasks vim.async.Task<R>[] A list of tasks to wait for and iterate over.
+--- @return async fun(): (integer?, any?, ...R) iterator that yields the index, error, and results of each task.
 function M.iter(tasks)
   -- TODO(lewis6991): do not return err, instead raise any errors as they occur
   assert(running(), 'Not in async context')
 
-  local results = {} --- @type [integer, any, ...any][]
   local remaining = #tasks
+  local queue = M._queue()
 
   -- Keep track of the callbacks so we can remove them when the iterator
   -- is garbage collected.
   --- @type table<vim.async.Task<any>,function>
   local task_cbs = setmetatable({}, { __mode = 'v' })
 
-  local event = M._event()
-
   -- Wait on all the tasks. Keep references to the task futures and wait
   -- callbacks so we can remove them when the iterator is garbage collected.
   for i, task in ipairs(tasks) do
     local function cb(err, ...)
       remaining = remaining - 1
-      table.insert(results, pack_len(i, err, ...))
-      event:set()
+      queue:put_nowait(pack_len(i, err, ...))
+      if remaining == 0 then
+        queue:put_nowait()
+      end
     end
 
     task_cbs[task] = cb
     task:wait(cb)
   end
 
+  --- @async
   return gc_fun(function()
-    if not next(results) then
-      event:clear()
-      if remaining == 0 then
-        return
-      end
-      event:wait()
-    end
-    local r = table.remove(results, 1)
-    return unpack_len(r)
+    return unpack_len(queue:get())
   end, function()
     for t, tcb in pairs(task_cbs) do
       t:_unwait(tcb)
@@ -923,7 +919,9 @@ end
 --- and an error is thrown.
 --- @async
 --- @generic R
+--- @param duration integer Timeout duration in milliseconds
 --- @param task vim.async.Task<R>
+--- @return R
 function M.timeout(duration, task)
   local timer = M.run(M.await, 2, vim.defer_fn, duration)
   if M.await_any({ task, timer }) == 2 then
@@ -1131,11 +1129,11 @@ do --- M._event()
 end
 
 do --- M._queue()
-  --- @class vim.async.Queue
+  --- @class vim.async.Queue<R>
   --- @field private _non_empty vim.async.Event
   --- @field package _non_full vim.async.Event
   --- @field private _max_size? integer
-  --- @field private _items integer[]
+  --- @field private _items R[]
   --- @field private _right_i integer
   --- @field private _left_i integer
   local Queue = {}

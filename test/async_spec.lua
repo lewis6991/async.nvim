@@ -35,6 +35,9 @@ describe('async', function()
         return handle
       end
 
+      --- @param task vim.async.Task
+      --- @param pat string
+      --- @return string
       function _G.check_task_err(task, pat)
         local ok, err = task:pwait(10)
         if ok then
@@ -45,6 +48,9 @@ describe('async', function()
         return err
       end
 
+      --- @param expected any
+      --- @param actual any
+      --- @param msg? string
       function _G.eq(expected, actual, msg)
         if not vim.deep_equal(expected, actual) then
           error(
@@ -589,6 +595,7 @@ stack traceback:
 
   it_exec('iter tasks with garbage collection', function()
     --- @param task vim.async.Task
+    --- @return integer
     local function get_task_callback_count(task)
       --- @diagnostic disable-next-line: access-invisible
       return vim.tbl_count(task._future._callbacks)
