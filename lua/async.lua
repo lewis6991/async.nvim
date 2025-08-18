@@ -1,3 +1,10 @@
+local util = require('async._util')
+
+local pack_len = util.pack_len
+local unpack_len = util.unpack_len
+local is_callable = util.is_callable
+local gc_fun = util.gc_fun
+
 --- This module implements an asynchronous programming library for Neovim,
 --- enabling developers to write non-blocking, coroutine-based code. Below is a
 --- summary of its key features and components:
@@ -126,43 +133,6 @@ local M = {}
 -- platforms.
 local MAX_TIMEOUT = 2 ^ 31 - 1
 
---- @param ... any
---- @return {[integer]: any, n: integer}
-local function pack_len(...)
-  return { n = select('#', ...), ... }
-end
-
---- like unpack() but use the length set by F.pack_len if present
---- @param t? { [integer]: any, n?: integer }
---- @param first? integer
---- @return any...
-local function unpack_len(t, first)
-  if t then
-    return unpack(t, first or 1, t.n or table.maxn(t))
-  end
-end
-
---- @return_cast obj function
-local function is_callable(obj)
-  return vim.is_callable(obj)
-end
-
---- Create a function that runs a function when it is garbage collected.
---- @generic F : function
---- @param f F
---- @param gc fun()
---- @return F
-local function gc_fun(f, gc)
-  local proxy = newproxy(true)
-  local proxy_mt = getmetatable(proxy)
-  proxy_mt.__gc = gc
-  proxy_mt.__call = function(_, ...)
-    return f(...)
-  end
-
-  return proxy
-end
-
 --- Weak table to keep track of running tasks
 --- @type table<thread,vim.async.Task<any>?>
 local threads = setmetatable({}, { __mode = 'k' })
@@ -202,14 +172,6 @@ end
 
 --- @class vim.async.Closable
 --- @field close fun(self, callback?: fun())
-
---- @param obj any
---- @return boolean
---- @return_cast obj vim.async.Closable
-local function is_closable(obj)
-  local ty = type(obj)
-  return (ty == 'table' or ty == 'userdata') and vim.is_callable(obj.close)
-end
 
 --- Tasks are used to run coroutines in event loops. If a coroutine needs to
 --- wait on the event loop, the Task suspends the execution of the coroutine and
@@ -252,16 +214,11 @@ end
 --- @field package _awaiting? vim.async.Task|vim.async.Closable
 local Task = {}
 
---- @class vim.async.Task.Opts
---- @field name? string
---- @field detached? boolean
---- @field package _internal? boolean
-
 do --- Task
   Task.__index = Task
   --- @package
   --- @param func function
-  --- @param opts? vim.async.Task.Opts
+  --- @param opts? vim.async.run.Opts
   --- @return vim.async.Task
   function Task._new(func, opts)
     local thread = coroutine.create(function(marker, ...)
@@ -454,6 +411,14 @@ do --- Task
         callback()
       end)
     end
+  end
+
+  --- @param obj any
+  --- @return boolean
+  --- @return_cast obj vim.async.Closable
+  local function is_closable(obj)
+    local ty = type(obj)
+    return (ty == 'table' or ty == 'userdata') and vim.is_callable(obj.close)
   end
 
   do -- Task:_resume()
@@ -661,61 +626,61 @@ do --- Task
   end
 end
 
---- @package
---- @generic T, R
---- @param opts? vim.async.Task.Opts
---- @param func async fun(...:T...): R... Function to run in an async context
---- @param ... T... Arguments to pass to the function
---- @return vim.async.Task<R...>
-local function run(opts, func, ...)
-  vim.validate('opts', opts, 'table', true)
-  vim.validate('func', func, 'callable')
-  -- TODO(lewis6991): add task names
-  local task = Task._new(func, opts)
-  local info = debug.getinfo(2, 'Sl')
-  if info and info.currentline then
-    task._caller = ('%s:%d'):format(info.source, info.currentline)
-  end
-  task:_resume(...)
-  return task
-end
+do --- M.run
+  --- @class vim.async.run.Opts
+  --- @field name? string
+  --- @field detached? boolean
+  --- @field package _internal? boolean
 
---- Run a function in an async context, asynchronously.
----
---- Returns an [vim.async.Task] object which can be used to wait or await the result
---- of the function.
----
---- Examples:
---- ```lua
---- -- Run a uv function and wait for it
---- local stat = vim.async.run(function()
----     return vim.async.await(2, vim.uv.fs_stat, 'foo.txt')
---- end):wait()
----
---- -- Since uv functions have sync versions, this is the same as:
---- local stat = vim.fs_stat('foo.txt')
---- ```
---- @generic T, R
---- @overload fun(func: async fun(...:T...), ...: T...): vim.async.Task<R...>
---- @overload fun(name: string, func: async fun(...:T...), ...: T...): vim.async.Task<R...>
---- @overload fun(opts: vim.async.Task.Opts, func: async fun(...:T...), ...: T...): vim.async.Task<R...>
-function M.run(...)
-  local arg1 = select(1, ...)
-  if type(arg1) == 'string' then
-    return run({ name = arg1 }, select(2, ...))
-  elseif vim.is_callable(arg1) then
-    return run(nil, ...)
-  elseif type(arg1) == 'table' then
-    return run(...)
+  --- @package
+  --- @generic T, R
+  --- @param opts? vim.async.run.Opts
+  --- @param func async fun(...:T...): R... Function to run in an async context
+  --- @param ... T... Arguments to pass to the function
+  --- @return vim.async.Task<R...>
+  local function run(opts, func, ...)
+    vim.validate('opts', opts, 'table', true)
+    vim.validate('func', func, 'callable')
+    -- TODO(lewis6991): add task names
+    local task = Task._new(func, opts)
+    local info = debug.getinfo(2, 'Sl')
+    if info and info.currentline then
+      task._caller = ('%s:%d'):format(info.source, info.currentline)
+    end
+    task:_resume(...)
+    return task
   end
-  error('Invalid arguments')
-end
 
---- Returns true if the current task has been closed.
---- @return boolean
-function M.is_closing()
-  local task = running()
-  return task and task._closing or false
+  --- Run a function in an async context, asynchronously.
+  ---
+  --- Returns an [vim.async.Task] object which can be used to wait or await the result
+  --- of the function.
+  ---
+  --- Examples:
+  --- ```lua
+  --- -- Run a uv function and wait for it
+  --- local stat = vim.async.run(function()
+  ---     return vim.async.await(2, vim.uv.fs_stat, 'foo.txt')
+  --- end):wait()
+  ---
+  --- -- Since uv functions have sync versions, this is the same as:
+  --- local stat = vim.fs_stat('foo.txt')
+  --- ```
+  --- @generic T, R
+  --- @overload fun(func: async fun(...:T...), ...: T...): vim.async.Task<R...>
+  --- @overload fun(name: string, func: async fun(...:T...), ...: T...): vim.async.Task<R...>
+  --- @overload fun(opts: vim.async.run.Opts, func: async fun(...:T...), ...: T...): vim.async.Task<R...>
+  function M.run(...)
+    local arg1 = select(1, ...)
+    if type(arg1) == 'string' then
+      return run({ name = arg1 }, select(2, ...))
+    elseif vim.is_callable(arg1) then
+      return run(nil, ...)
+    elseif type(arg1) == 'table' then
+      return run(...)
+    end
+    error('Invalid arguments')
+  end
 end
 
 do --- M.await()
@@ -801,6 +766,13 @@ do --- M.await()
   end
 end
 
+--- Returns true if the current task has been closed.
+--- @return boolean
+function M.is_closing()
+  local task = running()
+  return task and task._closing or false
+end
+
 --- Creates an async function with a callback style function.
 ---
 --- `func` can optionally return an object with a close method to clean up
@@ -840,163 +812,165 @@ function M.wrap(argc, func)
   end
 end
 
---- @async
---- @generic R
---- @param tasks vim.async.Task<R>[] A list of tasks to wait for and iterate over.
---- @return async fun(): (integer?, any?, ...R) iterator that yields the index, error, and results of each task.
-local function iter(tasks)
-  vim.validate('tasks', tasks, 'table')
+do --- M.iter(), M.await_all(), M.await_any()
+  --- @async
+  --- @generic R
+  --- @param tasks vim.async.Task<R>[] A list of tasks to wait for and iterate over.
+  --- @return async fun(): (integer?, any?, ...R) iterator that yields the index, error, and results of each task.
+  local function iter(tasks)
+    vim.validate('tasks', tasks, 'table')
 
-  -- TODO(lewis6991): do not return err, instead raise any errors as they occur
-  assert(running(), 'Not in async context')
+    -- TODO(lewis6991): do not return err, instead raise any errors as they occur
+    assert(running(), 'Not in async context')
 
-  local remaining = #tasks
-  local queue = M._queue()
+    local remaining = #tasks
+    local queue = M._queue()
 
-  -- Keep track of the callbacks so we can remove them when the iterator
-  -- is garbage collected.
-  --- @type table<vim.async.Task<any>,function>
-  local task_cbs = setmetatable({}, { __mode = 'v' })
+    -- Keep track of the callbacks so we can remove them when the iterator
+    -- is garbage collected.
+    --- @type table<vim.async.Task<any>,function>
+    local task_cbs = setmetatable({}, { __mode = 'v' })
 
-  -- Wait on all the tasks. Keep references to the task futures and wait
-  -- callbacks so we can remove them when the iterator is garbage collected.
-  for i, task in ipairs(tasks) do
-    local function cb(err, ...)
-      remaining = remaining - 1
-      queue:put_nowait(pack_len(err, i, ...))
-      if remaining == 0 then
-        queue:put_nowait()
+    -- Wait on all the tasks. Keep references to the task futures and wait
+    -- callbacks so we can remove them when the iterator is garbage collected.
+    for i, task in ipairs(tasks) do
+      local function cb(err, ...)
+        remaining = remaining - 1
+        queue:put_nowait(pack_len(err, i, ...))
+        if remaining == 0 then
+          queue:put_nowait()
+        end
       end
+
+      task_cbs[task] = cb
+      task:wait(cb)
     end
 
-    task_cbs[task] = cb
-    task:wait(cb)
+    --- @async
+    return gc_fun(function()
+      local r = queue:get()
+      if r then
+        local err = r[1]
+        if err then
+          -- -- Note: if the task was a child, then an error should have already been
+          -- -- raised in complete_task(). This should only trigger to detached tasks.
+          -- assert(assert(tasks[r[2]])._parent == nil)
+          error(('iter error[index:%d]: %s'):format(r[2], r[1]), 3)
+        end
+        return unpack_len(r, 2)
+      end
+    end, function()
+      for t, tcb in pairs(task_cbs) do
+        t:_unwait(tcb)
+      end
+    end)
+  end
+
+  --- Waits for multiple tasks to finish and iterates over their results.
+  ---
+  --- This function allows you to run multiple asynchronous tasks concurrently and
+  --- process their results as they complete. It returns an iterator function that
+  --- yields the index of the task, any error encountered, and the results of the
+  --- task.
+  ---
+  --- If a task completes with an error, the error is returned as the second
+  --- value. Otherwise, the results of the task are returned as subsequent values.
+  ---
+  --- Example:
+  --- ```lua
+  --- local task1 = vim.async.run(function()
+  ---   return 1, 'a'
+  --- end)
+  ---
+  --- local task2 = vim.async.run(function()
+  ---   return 2, 'b'
+  --- end)
+  ---
+  --- local task3 = vim.async.run(function()
+  ---   error('task3 error')
+  --- end)
+  ---
+  --- vim.async.run(function()
+  ---   for i, err, r1, r2 in vim.async.iter({task1, task2, task3}) do
+  ---     print(i, err, r1, r2)
+  ---   end
+  --- end)
+  --- ```
+  ---
+  --- Prints:
+  --- ```
+  --- 1 nil 1 'a'
+  --- 2 nil 2 'b'
+  --- 3 'task3 error' nil nil
+  --- ```
+  ---
+  --- @async
+  --- @generic R
+  --- @param tasks vim.async.Task<R>[] A list of tasks to wait for and iterate over.
+  --- @return async fun(): (integer?, any?, ...R) iterator that yields the index, error, and results of each task.
+  function M.iter(tasks)
+    return iter(tasks)
+  end
+
+  --- Wait for all tasks to finish and return their results.
+  ---
+  --- Example:
+  --- ```lua
+  --- local task1 = vim.async.run(function()
+  ---   return 1, 'a'
+  --- end)
+  ---
+  --- local task2 = vim.async.run(function()
+  ---   return 1, 'a'
+  --- end)
+  ---
+  --- local task3 = vim.async.run(function()
+  ---   error('task3 error')
+  --- end)
+  ---
+  --- vim.async.run(function()
+  ---   local results = vim.async.await_all({task1, task2, task3})
+  ---   print(vim.inspect(results))
+  --- end)
+  --- ```
+  ---
+  --- Prints:
+  --- ```
+  --- {
+  ---   [1] = { nil, 1, 'a' },
+  ---   [2] = { nil, 2, 'b' },
+  ---   [3] = { 'task2 error' },
+  --- }
+  --- ```
+  --- @async
+  --- @param tasks vim.async.Task<any>[]
+  --- @return table<integer,[any?,...?]>
+  function M.await_all(tasks)
+    assert(running(), 'Not in async context')
+    local itr = iter(tasks)
+    local results = {} --- @type table<integer,table>
+
+    local function collect(i, ...)
+      if i then
+        results[i] = pack_len(...)
+      end
+      return i ~= nil
+    end
+
+    while collect(itr()) do
+    end
+
+    return results
   end
 
   --- @async
-  return gc_fun(function()
-    local r = queue:get()
-    if r then
-      local err = r[1]
-      if err then
-        -- -- Note: if the task was a child, then an error should have already been
-        -- -- raised in complete_task(). This should only trigger to detached tasks.
-        -- assert(assert(tasks[r[2]])._parent == nil)
-        error(('iter error[index:%d]: %s'):format(r[2], r[1]), 3)
-      end
-      return unpack_len(r, 2)
-    end
-  end, function()
-    for t, tcb in pairs(task_cbs) do
-      t:_unwait(tcb)
-    end
-  end)
-end
-
---- Waits for multiple tasks to finish and iterates over their results.
----
---- This function allows you to run multiple asynchronous tasks concurrently and
---- process their results as they complete. It returns an iterator function that
---- yields the index of the task, any error encountered, and the results of the
---- task.
----
---- If a task completes with an error, the error is returned as the second
---- value. Otherwise, the results of the task are returned as subsequent values.
----
---- Example:
---- ```lua
---- local task1 = vim.async.run(function()
----   return 1, 'a'
---- end)
----
---- local task2 = vim.async.run(function()
----   return 2, 'b'
---- end)
----
---- local task3 = vim.async.run(function()
----   error('task3 error')
---- end)
----
---- vim.async.run(function()
----   for i, err, r1, r2 in vim.async.iter({task1, task2, task3}) do
----     print(i, err, r1, r2)
----   end
---- end)
---- ```
----
---- Prints:
---- ```
---- 1 nil 1 'a'
---- 2 nil 2 'b'
---- 3 'task3 error' nil nil
---- ```
----
---- @async
---- @generic R
---- @param tasks vim.async.Task<R>[] A list of tasks to wait for and iterate over.
---- @return async fun(): (integer?, any?, ...R) iterator that yields the index, error, and results of each task.
-function M.iter(tasks)
-  return iter(tasks)
-end
-
---- Wait for all tasks to finish and return their results.
----
---- Example:
---- ```lua
---- local task1 = vim.async.run(function()
----   return 1, 'a'
---- end)
----
---- local task2 = vim.async.run(function()
----   return 1, 'a'
---- end)
----
---- local task3 = vim.async.run(function()
----   error('task3 error')
---- end)
----
---- vim.async.run(function()
----   local results = vim.async.await_all({task1, task2, task3})
----   print(vim.inspect(results))
---- end)
---- ```
----
---- Prints:
---- ```
---- {
----   [1] = { nil, 1, 'a' },
----   [2] = { nil, 2, 'b' },
----   [3] = { 'task2 error' },
---- }
---- ```
---- @async
---- @param tasks vim.async.Task<any>[]
---- @return table<integer,[any?,...?]>
-function M.await_all(tasks)
-  assert(running(), 'Not in async context')
-  local itr = iter(tasks)
-  local results = {} --- @type table<integer,table>
-
-  local function collect(i, ...)
-    if i then
-      results[i] = pack_len(...)
-    end
-    return i ~= nil
+  --- @param tasks vim.async.Task<any>[]
+  --- @return integer? index
+  --- @return any? err
+  --- @return any ... results
+  function M.await_any(tasks)
+    return iter(tasks)()
   end
-
-  while collect(itr()) do
-  end
-
-  return results
-end
-
---- @async
---- @param tasks vim.async.Task<any>[]
---- @return integer? index
---- @return any? err
---- @return any ... results
-function M.await_any(tasks)
-  return iter(tasks)()
 end
 
 --- @async
@@ -1435,45 +1409,53 @@ do --- M.semaphore()
   end
 end
 
---- @param parent? vim.async.Task
---- @param prefix? string
---- @return string[]
-local function inspect(parent, prefix)
-  local tasks = {} --- @type table<any, vim.async.Task<any>?>
-  if parent then
-    for _, task in pairs(parent._children) do
-      if not task._internal then
-        tasks[#tasks + 1] = task
+do --- M._inspect_tree()
+  --- @private
+  --- @param parent? vim.async.Task
+  --- @param prefix? string
+  --- @return string[]
+  local function inspect(parent, prefix)
+    local tasks = {} --- @type table<any, vim.async.Task<any>?>
+    if parent then
+      for _, task in pairs(parent._children) do
+        if not task._internal then
+          tasks[#tasks + 1] = task
+        end
+      end
+    else
+      -- Gather for all detached tasks
+      for _, task in pairs(threads) do
+        if not task._parent and not task._internal then
+          tasks[#tasks + 1] = task
+        end
       end
     end
-  else
-    -- Gather for all detached tasks
-    for _, task in pairs(threads) do
-      if not task._parent and not task._internal then
-        tasks[#tasks + 1] = task
-      end
+
+    local r = {} --- @type string[]
+    for i, task in ipairs(tasks) do
+      local last = i == #tasks
+      r[#r + 1] = ('%s%s%s%s [%s]'):format(
+        prefix or '',
+        parent and (last and '└─ ' or '├─ ') or '',
+        task.name or '',
+        task._caller,
+        task:status()
+      )
+      local child_prefix = (prefix or '') .. (parent and (last and '   ' or '│  ') or '')
+      vim.list_extend(r, inspect(task, child_prefix))
     end
+    return r
   end
 
-  local r = {} --- @type string[]
-  for i, task in ipairs(tasks) do
-    local last = i == #tasks
-    r[#r + 1] = ('%s%s%s%s [%s]'):format(
-      prefix or '',
-      parent and (last and '└─ ' or '├─ ') or '',
-      task.name or '',
-      task._caller,
-      task:status()
-    )
-    local child_prefix = (prefix or '') .. (parent and (last and '   ' or '│  ') or '')
-    vim.list_extend(r, inspect(task, child_prefix))
+  --- Inspect the current async task tree.
+  ---
+  --- Returns a string representation of the task tree, showing the names and
+  --- statuses of each task.
+  --- @return string
+  function M._inspect_tree()
+    -- Inspired by https://docs.python.org/3.14/whatsnew/3.14.html#asyncio-introspection-capabilities
+    return table.concat(inspect(), '\n')
   end
-  return r
-end
-
-function M._inspect_tree()
-  -- Inspired by https://docs.python.org/3.14/whatsnew/3.14.html#asyncio-introspection-capabilities
-  return table.concat(inspect(), '\n')
 end
 
 return M

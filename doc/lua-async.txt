@@ -11,7 +11,7 @@ summary of its key features and components:
 
 2. Task Management:
 - Create tasks with `vim.async.run()`.
-- Tasks be awaited, canceled, or waited synchronously.
+- Tasks be awaited, closed, or waited synchronously.
 
 3. Awaiting:
 - |vim.async.await()|: Allows blocking on asynchronous operations, such as
@@ -146,21 +146,13 @@ vim.async.run({...})                                         *vim.async.run()*
     Overloads: ~
     - `fun(func: async fun(...: T ...), ...: T ...) -> Task<R ...>`
     - `fun(name: string, func: async fun(...: T ...), ...: T ...) -> Task<R ...>`
-    - `fun(opts: vim.async.Task.Opts, func: async fun(...: T ...), ...: T ...) -> Task<R ...>`
+    - `fun(opts: vim.async.run.Opts, func: async fun(...: T ...), ...: T ...) -> Task<R ...>`
 
     Parameters: ~
     - {...} (`any`)
 
     Returns: ~
     - (`Task<R ...>`)
-
-------------------------------------------------------------------------------
-vim.async.is_closing()                                *vim.async.is_closing()*
-
-    Returns true if the current task has been cancelled.
-
-    Returns: ~
-    - (`boolean`)
 
 ------------------------------------------------------------------------------
 vim.async.await({...})                                     *vim.async.await()*
@@ -210,6 +202,14 @@ vim.async.await({...})                                     *vim.async.await()*
 
     Returns: ~
     - (`any ...`)
+
+------------------------------------------------------------------------------
+vim.async.is_closing()                                *vim.async.is_closing()*
+
+    Returns true if the current task has been closed.
+
+    Returns: ~
+    - (`boolean`)
 
 ------------------------------------------------------------------------------
 vim.async.wrap({argc}, {func})                              *vim.async.wrap()*
@@ -373,7 +373,7 @@ vim.async.timeout({duration}, {task})                    *vim.async.timeout()*
 
     Run a task with a timeout.
 
-    If the task does not complete within the specified duration, it is cancelled
+    If the task does not complete within the specified duration, it is closed
     and an error is thrown.
 
     Attributes: ~
@@ -645,7 +645,7 @@ waits for event loop to restart it.
 
 Use the |vim.async.run()| to create Tasks.
 
-To cancel a running Task use the `close()` method. Calling it will cause the
+To close a running Task use the `close()` method. Calling it will cause the
 Task to throw a "closed" error in the wrapped coroutine.
 
 Note a Task can be waited on via more than one waiter.
@@ -657,11 +657,6 @@ Note a Task can be waited on via more than one waiter.
 
     Mark task for internal use. Used for awaiting children tasks on complete.
 
-
-------------------------------------------------------------------------------
-vim.async.Task:cancelled()                        *vim.async.Task:cancelled()*
-    Returns: ~
-    - (`boolean`)
 
 ------------------------------------------------------------------------------
 vim.async.Task:completed()                        *vim.async.Task:completed()*
@@ -764,14 +759,14 @@ vim.async.Task:status()                              *vim.async.Task:status()*
     - (`("running"|"awaiting"|"normal"|"scheduled"|"completed")`)
 
 ==============================================================================
-*vim.async.Task.Opts*
+*vim.async.run.Opts*
 ------------------------------------------------------------------------------
-*vim.async.Task.Opts.name*
+*vim.async.run.Opts.name*
     Type: `string?
 
 
 ------------------------------------------------------------------------------
-*vim.async.Task.Opts.detached*
+*vim.async.run.Opts.detached*
     Type: `boolean?
 
 
