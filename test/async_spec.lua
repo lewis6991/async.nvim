@@ -6,6 +6,10 @@ local exec_lua = helpers.exec_lua
 -- task finishes with synchronous wait
 -- nil in results
 
+-- TODO(lewis6991): test for cyclic await
+-- - child awaiting an ancestor (not allowed)
+-- - cyclic chain with detached tasks
+
 --- @param s string
 --- @param f fun()
 local function it_exec(s, f)
@@ -49,23 +53,47 @@ describe('async', function()
         return err
       end
 
+      --- @param s string
+      --- @return { [1]: string, pattern: boolean }
+      function _G.p(s)
+        return { s, pattern = true }
+      end
+
       --- @param expected any
       --- @param actual any
       --- @param msg? string
       function _G.eq(expected, actual, msg)
-        if not vim.deep_equal(expected, actual) then
+        local match
+        if
+          type(expected) == 'table'
+          and type(expected[1]) == 'string'
+          and expected.pattern == true
+        then
+          match = actual:match(expected[1]) ~= nil
+          expected = expected[1]
+        else
+          match = vim.deep_equal(expected, actual)
+        end
+
+        if not match then
+          if type(actual) == 'string' then
+            actual = '\n│  ' .. actual:gsub('\n', '\n│  ')
+          else
+            actual = vim.inspect(actual)
+          end
+          if type(expected) == 'string' then
+            expected = '\n│  ' .. expected:gsub('\n', '\n│  ')
+          else
+            expected = vim.inspect(expected)
+          end
           error(
-            ('%s\nactual: %s\nexpected: %s'):format(
-              msg or 'Mismatch:',
-              vim.inspect(actual),
-              vim.inspect(expected)
-            ),
+            ('%s\n\nactual: %s\n\nexpected: %s'):format(msg or 'Mismatch:', actual, expected),
             2
           )
         end
       end
 
-      --- @async
+      --- @async~
       function _G.eternity()
         await(function(_cb)
           -- Never call callback
@@ -585,7 +613,7 @@ stack traceback:
       end)
       Async.sleep(2)
     end)
-    eq(forever_child:status(), 'suspended')
+    eq(forever_child:status(), 'awaiting')
     main:close()
     check_task_err(main, 'closed')
     check_task_err(forever_child, 'closed')
@@ -741,5 +769,63 @@ stack traceback:
     run(function()
       run(eternity):close()
     end):wait()
+  end)
+
+  describe('inspect_tree', function()
+    it_exec('outside of tasks', function()
+      local parent = run('parent', function()
+        run('child1', eternity)
+        run('child2', eternity)
+        run('child3', function(...)
+          run('sub_child1', eternity)
+          run('sub_child2', eternity)
+          run(eternity) -- no name
+        end)
+      end)
+
+      eq(
+        p([=[
+parent@test/async_spec.lua:%d+ %[awaiting%]
+├─ child1@test/async_spec.lua:%d+ %[awaiting%]
+├─ child2@test/async_spec.lua:%d+ %[awaiting%]
+└─ child3@test/async_spec.lua:%d+ %[awaiting%]
+   ├─ sub_child1@test/async_spec.lua:%d+ %[awaiting%]
+   ├─ sub_child2@test/async_spec.lua:%d+ %[awaiting%]
+   └─ @test/async_spec.lua:%d+ %[awaiting%]]=]),
+        Async._inspect_tree()
+      )
+
+      parent:close()
+      check_task_err(parent, 'closed')
+    end)
+
+    it_exec('inside a task', function()
+      local inspect
+      local parent = run('parent', function()
+        run('child1', eternity)
+        run('child2', eternity)
+        run('child3', function(...)
+          run('sub_child1', eternity)
+          run('sub_child2', eternity)
+          run(eternity) -- no name
+          inspect = Async._inspect_tree()
+        end)
+      end)
+
+      eq(
+        p([=[
+parent@test/async_spec.lua:%d+ %[normal%]
+├─ child1@test/async_spec.lua:%d+ %[awaiting%]
+├─ child2@test/async_spec.lua:%d+ %[awaiting%]
+└─ child3@test/async_spec.lua:%d+ %[running%]
+   ├─ sub_child1@test/async_spec.lua:%d+ %[awaiting%]
+   ├─ sub_child2@test/async_spec.lua:%d+ %[awaiting%]
+   └─ @test/async_spec.lua:%d+ %[awaiting%]]=]),
+        inspect
+      )
+
+      parent:close()
+      check_task_err(parent, 'closed')
+    end)
   end)
 end)

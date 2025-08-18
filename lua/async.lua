@@ -8,7 +8,7 @@
 ---
 --- 2. Task Management:
 ---    - Create tasks with `vim.async.run()`.
----    - Tasks be awaited, canceled, or waited synchronously.
+---    - Tasks be awaited, closed, or waited synchronously.
 ---
 --- 3. Awaiting:
 ---    - [vim.async.await()]: Allows blocking on asynchronous operations, such as
@@ -217,7 +217,7 @@ end
 ---
 --- Use the [vim.async.run()] to create Tasks.
 ---
---- To cancel a running Task use the `close()` method. Calling it will cause the
+--- To close a running Task use the `close()` method. Calling it will cause the
 --- Task to throw a "closed" error in the wrapped coroutine.
 ---
 --- Note a Task can be waited on via more than one waiter.
@@ -231,6 +231,15 @@ end
 --- @field package _parent? vim.async.Task<any>
 --- @field package _parent_children_idx? integer
 ---
+--- Name of the task
+--- @field name? string
+---
+--- Mark task for internal use. Used for awaiting children tasks on complete.
+--- @field package _internal? string
+---
+--- The source line that created this task, used for inspect().
+--- @field package _caller? string
+---
 --- Maintain children as an array to preserve closure order.
 --- @field package _children table<integer, vim.async.Task<any>?>
 ---
@@ -239,22 +248,32 @@ end
 ---
 --- Tasks can await other async functions (task of callback functions)
 --- when we are waiting on a child, we store the handle to it here so we can
---- cancel it.
+--- close it.
 --- @field package _awaiting? vim.async.Task|vim.async.Closable
 local Task = {}
+
+--- @class vim.async.Task.Opts
+--- @field name? string
+--- @field detached? boolean
+--- @field package _internal? boolean
 
 do --- Task
   Task.__index = Task
   --- @package
   --- @param func function
+  --- @param opts? vim.async.Task.Opts
   --- @return vim.async.Task
-  function Task._new(func)
+  function Task._new(func, opts)
     local thread = coroutine.create(function(marker, ...)
       check_yield(marker)
       return func(...)
     end)
 
+    opts = opts or {}
+
     local self = setmetatable({
+      name = opts.name,
+      _internal = opts._internal,
       _closing = false,
       _thread = thread,
       _future = M._future(),
@@ -264,13 +283,17 @@ do --- Task
 
     threads[thread] = self
 
+    if not (opts and opts.detached) then
+      self:_attach(running())
+    end
+
     return self
   end
 
-  --- @return boolean
-  function Task:cancelled()
-    return self._future._err == 'closed'
-  end
+  -- --- @return boolean
+  -- function Task:closed()
+  --   return self._future._err == 'closed'
+  -- end
 
   --- @package
   function Task:_unwait(cb)
@@ -320,7 +343,7 @@ do --- Task
 
     local res = pack_len(self._future:result())
 
-    assert(self:status() == 'dead' or res[2] == yield_error)
+    assert(self:status() == 'completed' or res[2] == yield_error)
 
     if not res[1] then
       error(res[2], 2)
@@ -439,11 +462,11 @@ do --- Task
     --- @param task vim.async.Task<R>
     --- @param stat boolean
     --- @param ...R... result
-    local function finish_task(task, stat, ...)
+    local function complete_task(task, stat, ...)
       local has_children = next(task._children) ~= nil
 
       --- @async
-      local function finish0(...)
+      local function complete0(...)
         -- TODO(lewis6991): should we collect all errors?
         for _, child in pairs(task._children) do
           if not stat then
@@ -470,14 +493,15 @@ do --- Task
         end
       end
 
-      -- Only run finish0() if there are children, otherwise
+      -- Only run complete0() if there are children, otherwise
       -- this will cause infinite recursion:
-      --   M.run() -> task:_resume() -> resume_co() -> finish_task() -> M.run()
+      --   M.run() -> task:_resume() -> resume_co() -> complete_task() -> M.run()
       if has_children then
-        M.run(finish0, ...)
+        -- TODO(lewis6991): should this be detached?
+        M.run({ _internal = true, name = 'await_children' }, complete0, ...)
       else
         --- @diagnostic disable-next-line: await-in-sync
-        finish0(...)
+        complete0(...)
       end
     end
 
@@ -585,12 +609,12 @@ do --- Task
           -- Can only happen if coroutine.resume() is called outside of this
           -- function. When that happens check_yield() will error the coroutine
           -- which puts it in the 'dead' state.
-          finish_task(self, false, (...))
+          complete_task(self, false, (...))
           return
         end
 
         local awaitable = handle_co_resume(self._thread, function(stat, ...)
-          finish_task(self, stat, ...)
+          complete_task(self, stat, ...)
         end, coroutine.resume(self._thread, resume_marker, unpack_len(args)))
 
         if not awaitable then
@@ -611,11 +635,49 @@ do --- Task
     print(tostring(self._thread), ...)
   end
 
-  --- Returns the status of tasks thread. See [coroutine.status()].
-  --- @return 'running'|'suspended'|'normal'|'dead'?
+  --- Returns the status of the task:
+  --- - 'running'    : task is running (that is, is called `status()`).
+  --- - 'normal'     : task is active but not running (e.g. it is starting
+  ---                  another task).
+  --- - 'awaiting'   : if the task is awaiting another task either directly via
+  ---                  `await()` or waiting for all children to complete.
+  --- - 'completed'  : task and all it's children have completed
+  --- @return 'running'|'awaiting'|'normal'|'scheduled'|'completed'
   function Task:status()
-    return coroutine.status(self._thread)
+    local co_status = coroutine.status(self._thread)
+    if co_status == 'dead' then
+      return self:completed() and 'completed' or 'awaiting'
+    elseif co_status == 'suspended' then
+      return 'awaiting'
+    elseif co_status == 'normal' then
+      -- TODO(lewis6991): This state is a bit ambiguous. If all tasks
+      -- are started from the main thread, then we can remove this state.
+      -- Though it still may be possible if the user resumes a non-task
+      -- coroutine.
+      return 'normal'
+    end
+    assert(co_status == 'running')
+    return 'running'
   end
+end
+
+--- @package
+--- @generic T, R
+--- @param opts? vim.async.Task.Opts
+--- @param func async fun(...:T...): R... Function to run in an async context
+--- @param ... T... Arguments to pass to the function
+--- @return vim.async.Task<R...>
+local function run(opts, func, ...)
+  vim.validate('opts', opts, 'table', true)
+  vim.validate('func', func, 'callable')
+  -- TODO(lewis6991): add task names
+  local task = Task._new(func, opts)
+  local info = debug.getinfo(2, 'Sl')
+  if info and info.currentline then
+    task._caller = ('%s:%d'):format(info.source, info.currentline)
+  end
+  task:_resume(...)
+  return task
 end
 
 --- Run a function in an async context, asynchronously.
@@ -634,19 +696,22 @@ end
 --- local stat = vim.fs_stat('foo.txt')
 --- ```
 --- @generic T, R
---- @param func async fun(...:T...): R... Function to run in an async context
---- @param ... T... Arguments to pass to the function
---- @return vim.async.Task<R...>
-function M.run(func, ...)
-  vim.validate('func', func, 'callable')
-  -- TODO(lewis6991): add task names
-  local task = Task._new(func)
-  task:_attach(running())
-  task:_resume(...)
-  return task
+--- @overload fun(func: async fun(...:T...), ...: T...): vim.async.Task<R...>
+--- @overload fun(name: string, func: async fun(...:T...), ...: T...): vim.async.Task<R...>
+--- @overload fun(opts: vim.async.Task.Opts, func: async fun(...:T...), ...: T...): vim.async.Task<R...>
+function M.run(...)
+  local arg1 = select(1, ...)
+  if type(arg1) == 'string' then
+    return run({ name = arg1 }, select(2, ...))
+  elseif vim.is_callable(arg1) then
+    return run(nil, ...)
+  elseif type(arg1) == 'table' then
+    return run(...)
+  end
+  error('Invalid arguments')
 end
 
---- Returns true if the current task has been cancelled.
+--- Returns true if the current task has been closed.
 --- @return boolean
 function M.is_closing()
   local task = running()
@@ -815,7 +880,7 @@ local function iter(tasks)
       local err = r[1]
       if err then
         -- -- Note: if the task was a child, then an error should have already been
-        -- -- raised in finish_task(). This should only trigger to detached tasks.
+        -- -- raised in complete_task(). This should only trigger to detached tasks.
         -- assert(assert(tasks[r[2]])._parent == nil)
         error(('iter error[index:%d]: %s'):format(r[2], r[1]), 3)
       end
@@ -946,7 +1011,7 @@ end
 
 --- Run a task with a timeout.
 ---
---- If the task does not complete within the specified duration, it is cancelled
+--- If the task does not complete within the specified duration, it is closed
 --- and an error is thrown.
 --- @async
 --- @generic R
@@ -962,7 +1027,7 @@ function M.timeout(duration, task)
     return t
   end)
   if M.await_any({ task, timer }) == 2 then
-    -- Timer finished first, cancel the task
+    -- Timer completed first, close the task
     task:close()
     error('timeout')
   end
@@ -1022,7 +1087,7 @@ do --- M._future()
   --- @param callback fun(err?: any, ...: any)
   function Future:wait(callback)
     if self:completed() then
-      -- Already finished or closed
+      -- Already completed or closed
       callback(self._err, unpack_len(self._result))
     else
       self._callbacks[self._callback_pos] = callback
@@ -1368,6 +1433,47 @@ do --- M.semaphore()
     obj._event:set()
     return obj
   end
+end
+
+--- @param parent? vim.async.Task
+--- @param prefix? string
+--- @return string[]
+local function inspect(parent, prefix)
+  local tasks = {} --- @type table<any, vim.async.Task<any>?>
+  if parent then
+    for _, task in pairs(parent._children) do
+      if not task._internal then
+        tasks[#tasks + 1] = task
+      end
+    end
+  else
+    -- Gather for all detached tasks
+    for _, task in pairs(threads) do
+      if not task._parent and not task._internal then
+        tasks[#tasks + 1] = task
+      end
+    end
+  end
+
+  local r = {} --- @type string[]
+  for i, task in ipairs(tasks) do
+    local last = i == #tasks
+    r[#r + 1] = ('%s%s%s%s [%s]'):format(
+      prefix or '',
+      parent and (last and '└─ ' or '├─ ') or '',
+      task.name or '',
+      task._caller,
+      task:status()
+    )
+    local child_prefix = (prefix or '') .. (parent and (last and '   ' or '│  ') or '')
+    vim.list_extend(r, inspect(task, child_prefix))
+  end
+  return r
+end
+
+function M._inspect_tree()
+  -- Inspired by https://docs.python.org/3.14/whatsnew/3.14.html#asyncio-introspection-capabilities
+  return table.concat(inspect(), '\n')
 end
 
 return M

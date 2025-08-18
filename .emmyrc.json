@@ -1,10 +1,10 @@
 {
   "$schema": "https://raw.githubusercontent.com/EmmyLuaLs/emmylua-analyzer-rust/refs/heads/main/crates/emmylua_code_analysis/resources/schema.json",
-  "runtime": {
-    "version": "LuaJIT"
+  "codeAction": {
+    "insertSpace": true
   },
-  "diagnostics" : {
-    "disable" : [
+  "diagnostics": {
+    "disable": [
       "unnecessary-if"
     ],
     "enables": [
@@ -14,19 +14,19 @@
       "missing-global-doc"
     ]
   },
-  "strict": {
-    "typeCall": true,
-    "arrayIndex": true
+  "runtime": {
+    "version": "LuaJIT"
   },
-  "codeAction": {
-    "insertSpace": true
+  "strict": {
+    "arrayIndex": true,
+    "typeCall": true
   },
   "workspace": {
-    "library": [
-      "$VIMRUNTIME"
-    ],
     "ignoreDir": [
       "nvim-test"
+    ],
+    "library": [
+      "$VIMRUNTIME"
     ]
   }
 }

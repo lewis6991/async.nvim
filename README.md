@@ -94,7 +94,8 @@ local code = vim.async.run(function()
 end):wait()
 ```
 
-Now, you can call `run_job_a` imperatively, without callbacks. The async version returns the same results as the callback would have received.
+Now, you can call `run_job_a` imperatively, without callbacks.
+The async version returns the same results as the callback would have received.
 
 Additionally, since `run_job_a` returns a handle (e.g., `uv_process_t`), `vim.async.run` will automatically close it when the task completes or is manually closed.
 
@@ -102,13 +103,16 @@ Additionally, since `run_job_a` returns a handle (e.g., `uv_process_t`), `vim.as
 
 ## Callback Functions
 
-Callback functions accept a callback argument, which receives the result. Sometimes, omitting the callback runs the function synchronously. To support cancellation, these functions can return a handle with `cancel` or `close` methods.
+Callback functions accept a callback argument, which receives the result.
+Sometimes, omitting the callback runs the function synchronously.
+To support cancellation, these functions can return a handle `close()` method.
 
 ---
 
 ## Async Function Nesting
 
-Unlike Python or JavaScript, not all functions need to be declared async. Instead, you must execute them in an async context using `async.run()`.
+Unlike Python or JavaScript, not all functions need to be declared async.
+Instead, you must execute them in an async context using `async.run()`.
 
 ```lua
 --- @async
@@ -140,7 +144,8 @@ end)
 
 ## Task Objects
 
-Tasks represent asynchronous operations. They can be awaited (pausing execution until completion) or cancelled.
+Tasks represent asynchronous operations.
+They can be awaited (pausing execution until completion) or closed.
 This makes them ideal for complex workflows, supporting cancellation, timeouts, and multiple consumers.
 
 ---

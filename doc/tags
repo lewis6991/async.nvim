@@ -26,6 +26,10 @@ vim.async.Semaphore:acquire()	lua-async.txt	/*vim.async.Semaphore:acquire()*
 vim.async.Semaphore:release()	lua-async.txt	/*vim.async.Semaphore:release()*
 vim.async.Semaphore:with()	lua-async.txt	/*vim.async.Semaphore:with()*
 vim.async.Task	lua-async.txt	/*vim.async.Task*
+vim.async.Task.Opts	lua-async.txt	/*vim.async.Task.Opts*
+vim.async.Task.Opts.detached	lua-async.txt	/*vim.async.Task.Opts.detached*
+vim.async.Task.Opts.name	lua-async.txt	/*vim.async.Task.Opts.name*
+vim.async.Task.name	lua-async.txt	/*vim.async.Task.name*
 vim.async.Task:cancelled()	lua-async.txt	/*vim.async.Task:cancelled()*
 vim.async.Task:close()	lua-async.txt	/*vim.async.Task:close()*
 vim.async.Task:completed()	lua-async.txt	/*vim.async.Task:completed()*

@@ -122,7 +122,7 @@ error, it close all of its children tasks.
 <
 
 ------------------------------------------------------------------------------
-vim.async.run({func}, {...})                                 *vim.async.run()*
+vim.async.run({...})                                         *vim.async.run()*
 
     Run a function in an async context, asynchronously.
 
@@ -143,12 +143,16 @@ vim.async.run({func}, {...})                                 *vim.async.run()*
     Generics: ~
     - `T`, `R`
 
+    Overloads: ~
+    - `fun(func: async fun(...: T ...), ...: T ...) -> Task<R ...>`
+    - `fun(name: string, func: async fun(...: T ...), ...: T ...) -> Task<R ...>`
+    - `fun(opts: vim.async.Task.Opts, func: async fun(...: T ...), ...: T ...) -> Task<R ...>`
+
     Parameters: ~
-    - {func} (`async fun(...: T ...) -> R ...`): Function to run in an async context
-    - {...} (`T ...`): Arguments to pass to the function
+    - {...} (`any`)
 
     Returns: ~
-    - (`Task<R>`)
+    - (`Task<R ...>`)
 
 ------------------------------------------------------------------------------
 vim.async.is_closing()                                *vim.async.is_closing()*
@@ -290,8 +294,11 @@ vim.async.iter({tasks})                                     *vim.async.iter()*
     Attributes: ~
     - `async`
 
+    Generics: ~
+    - `R`
+
     Parameters: ~
-    - {tasks} (`Task<any>[]`): A list of tasks to wait for and iterate over.
+    - {tasks} (`Task<R>[]`): A list of tasks to wait for and iterate over.
 
     Returns: ~
     - {iterator} (`async fun() -> (integer?,any,unknown)`): that yields the index, error, and results of each task.
@@ -376,7 +383,7 @@ vim.async.timeout({duration}, {task})                    *vim.async.timeout()*
     - `R`
 
     Parameters: ~
-    - {duration} (`???`)
+    - {duration} (`integer`): Timeout duration in milliseconds
     - {task} (`Task<R>`)
 
     Returns: ~
@@ -558,7 +565,7 @@ vim.async.Queue:get()                                  *vim.async.Queue:get()*
     - `async`
 
     Returns: ~
-    - (`integer?`)
+    - (`R?`)
 
 ------------------------------------------------------------------------------
 vim.async.Queue:get_nowait()                    *vim.async.Queue:get_nowait()*
@@ -567,7 +574,7 @@ vim.async.Queue:get_nowait()                    *vim.async.Queue:get_nowait()*
     If the queue is empty, raise "Queue is empty" error.
 
     Returns: ~
-    - (`integer?`)
+    - (`R?`)
 
 ------------------------------------------------------------------------------
 vim.async.Queue:put_nowait({value})             *vim.async.Queue:put_nowait()*
@@ -644,6 +651,14 @@ Task to throw a "closed" error in the wrapped coroutine.
 Note a Task can be waited on via more than one waiter.
 
 ------------------------------------------------------------------------------
+*vim.async.Task.name*
+    Type: `string?
+
+
+    Mark task for internal use. Used for awaiting children tasks on complete.
+
+
+------------------------------------------------------------------------------
 vim.async.Task:cancelled()                        *vim.async.Task:cancelled()*
     Returns: ~
     - (`boolean`)
@@ -694,7 +709,8 @@ vim.async.Task:pwait({timeout})                       *vim.async.Task:pwait()*
     - {timeout} (`integer?`)
 
     Returns: ~
-    - (`(boolean,(any ...?|string))`)
+    - (`boolean`)
+    - (`R ...`)
 
 ------------------------------------------------------------------------------
 vim.async.Task:detach()                              *vim.async.Task:detach()*
@@ -736,9 +752,27 @@ vim.async.Task:close({callback})                      *vim.async.Task:close()*
 ------------------------------------------------------------------------------
 vim.async.Task:status()                              *vim.async.Task:status()*
 
-    Returns the status of tasks thread. See |coroutine.status()|.
+    Returns the status of the task:
+    - 'running'    : task is running (that is, is called `status()`).
+    - 'normal'     : task is active but not running (e.g. it is starting
+    another task).
+    - 'awaiting'   : if the task is awaiting another task either directly via
+    `await()` or waiting for all children to complete.
+    - 'completed'  : task and all it's children have completed
 
     Returns: ~
-    - (`("running"|"suspended"|"normal"|"dead")?`)
+    - (`("running"|"awaiting"|"normal"|"scheduled"|"completed")`)
+
+==============================================================================
+*vim.async.Task.Opts*
+------------------------------------------------------------------------------
+*vim.async.Task.Opts.name*
+    Type: `string?
+
+
+------------------------------------------------------------------------------
+*vim.async.Task.Opts.detached*
+    Type: `boolean?
+
 
 vim:tw=78:ts=8:sw=4:sts=4:et:ft=help:norl:
