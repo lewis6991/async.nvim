@@ -801,8 +801,8 @@ end
 ---
 --- @generic T, R
 --- @param argc integer
---- @param func fun(...: T, callback: fun(...: R)): vim.async.Closable?
---- @return async fun(...:T): R
+--- @param func fun(...: T..., callback: fun(...: R...)): vim.async.Closable?
+--- @return async fun(...:T...): R...
 function M.wrap(argc, func)
   vim.validate('argc', argc, 'number')
   vim.validate('func', func, 'callable')
