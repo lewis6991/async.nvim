@@ -208,6 +208,8 @@ vim.async.is_closing()                                *vim.async.is_closing()*
 
     Returns true if the current task has been closed.
 
+    Can be used in an async function to do cleanup when a task is closing.
+
     Returns: ~
     - (`boolean`)
 
@@ -245,10 +247,10 @@ vim.async.wrap({argc}, {func})                              *vim.async.wrap()*
 
     Parameters: ~
     - {argc} (`integer`)
-    - {func} (`fun(...: T, callback: fun(...: R)) -> vim.async.Closable?`)
+    - {func} (`fun(...: T ..., callback: fun(...: R ...)) -> vim.async.Closable?`)
 
     Returns: ~
-    - (`async fun(...: T) -> R`)
+    - (`async fun(...: T ...) -> R ...`)
 
 ------------------------------------------------------------------------------
 vim.async.iter({tasks})                                     *vim.async.iter()*
@@ -348,6 +350,29 @@ vim.async.await_all({tasks})                           *vim.async.await_all()*
 
 ------------------------------------------------------------------------------
 vim.async.await_any({tasks})                           *vim.async.await_any()*
+
+    Wait for the first task to complete and return its result.
+
+    Example:
+    >lua
+     local task1 = vim.async.run(function()
+       vim.async.sleep(100)
+       return 1, 'a'
+     end)
+
+     local task2 = vim.async.run(function()
+       return 2, 'b'
+     end)
+
+     vim.async.run(function()
+       local i, err, r1, r2 = vim.async.await_any({task1, task2})
+       assert(i == 2)
+       assert(err == nil)
+       assert(r1 == 2)
+       assert(r2 == 'b')
+     end)
+<
+
     Attributes: ~
     - `async`
 
@@ -361,6 +386,12 @@ vim.async.await_any({tasks})                           *vim.async.await_any()*
 
 ------------------------------------------------------------------------------
 vim.async.sleep({duration})                                *vim.async.sleep()*
+
+    Asynchronously sleep for a given duration.
+
+    Blocks the current task for the given duration, but does not block the main
+    thread.
+
     Attributes: ~
     - `async`
 
@@ -405,7 +436,7 @@ vim.async.semaphore({permits})                         *vim.async.semaphore()*
          tasks|i| = vim.async.run(function()
            semaphore:with(function()
              value = value + 1
-             sleep(10)
+             vim.async.sleep(10)
              print(value) -- Never more than 2
              value = value - 1
            end)
@@ -446,6 +477,9 @@ vim.async.Event:set({max_woken})                       *vim.async.Event:set()*
 
     All tasks waiting for event to be set will be immediately awakened.
 
+    If `max_woken` is provided, only up to `max_woken` waiters will be woken.
+    The event will be reset to `false` if there are more waiters remaining.
+
     Parameters: ~
     - {max_woken} (`integer?`)
 
@@ -455,8 +489,8 @@ vim.async.Event:wait()                                *vim.async.Event:wait()*
 
     Wait until the event is set.
 
-    If the event is set, return `true` immediately. Otherwise block until
-    another task calls set().
+    If the event is set, return immediately. Otherwise block until another
+    task calls set().
 
     Attributes: ~
     - `async`
@@ -497,7 +531,7 @@ vim.async.Future:result()                          *vim.async.Future:result()*
     "Future has not completed" error.
 
     Returns: ~
-    - {stat} (`boolean`)
+    - {stat} (`boolean`): true if the Future completed successfully, false otherwise.
     - {error} (`any ...`): or result
 
 ------------------------------------------------------------------------------
@@ -519,7 +553,12 @@ vim.async.Future:wait({callback})                    *vim.async.Future:wait()*
 ------------------------------------------------------------------------------
 vim.async.Future:complete({err}, {...})          *vim.async.Future:complete()*
 
-    Mark the Future as complete and set its err or result.
+    Mark the Future as complete and set its result.
+
+    If an error is provided, the Future is marked as failed. Otherwise, it is
+    marked as successful with the provided result.
+
+    This will trigger any callbacks that are waiting on the Future.
 
     Parameters: ~
     - {err} (`any`)
@@ -531,7 +570,7 @@ vim.async.Future:complete({err}, {...})          *vim.async.Future:complete()*
 ------------------------------------------------------------------------------
 vim.async.Queue:size()                                *vim.async.Queue:size()*
 
-    Returns the number of items in the queue
+    Returns the number of items in the queue.
 
     Returns: ~
     - (`integer`)
@@ -539,7 +578,7 @@ vim.async.Queue:size()                                *vim.async.Queue:size()*
 ------------------------------------------------------------------------------
 vim.async.Queue:max_size()                        *vim.async.Queue:max_size()*
 
-    Returns the maximum number of items in the queue
+    Returns the maximum number of items in the queue.
 
     Returns: ~
     - (`integer?`)
@@ -547,7 +586,9 @@ vim.async.Queue:max_size()                        *vim.async.Queue:max_size()*
 ------------------------------------------------------------------------------
 vim.async.Queue:put({value})                           *vim.async.Queue:put()*
 
-    Put a value into the queue
+    Put an item into the queue.
+
+    If the queue is full, wait until a free slot is available.
 
     Attributes: ~
     - `async`
@@ -559,22 +600,25 @@ vim.async.Queue:put({value})                           *vim.async.Queue:put()*
 ------------------------------------------------------------------------------
 vim.async.Queue:get()                                  *vim.async.Queue:get()*
 
-    Get a value from the queue, blocking if the queue is empty
+    Get an item from the queue.
+
+    If the queue is empty, wait until an item is available.
 
     Attributes: ~
     - `async`
 
     Returns: ~
-    - (`R?`)
+    - (`any`)
 
 ------------------------------------------------------------------------------
 vim.async.Queue:get_nowait()                    *vim.async.Queue:get_nowait()*
 
-    Get a value from the queue, erroring if queue is empty.
-    If the queue is empty, raise "Queue is empty" error.
+    Get an item from the queue without blocking.
+
+    If the queue is empty, raise an error.
 
     Returns: ~
-    - (`R?`)
+    - (`any`)
 
 ------------------------------------------------------------------------------
 vim.async.Queue:put_nowait({value})             *vim.async.Queue:put_nowait()*
@@ -600,8 +644,10 @@ automatically acquires and releases the semaphore around a function call.
 ------------------------------------------------------------------------------
 vim.async.Semaphore:with({fn})                    *vim.async.Semaphore:with()*
 
-    Executes the given function within the semaphore's context, ensuring
-    that the semaphore's constraints are respected.
+    Executes a function within the semaphore.
+
+    This acquires the semaphore before running the function and releases it
+    after the function completes, even if it errors.
 
     Attributes: ~
     - `async`
@@ -700,6 +746,12 @@ vim.async.Task:wait({callback_or_timeout})             *vim.async.Task:wait()*
 
 ------------------------------------------------------------------------------
 vim.async.Task:pwait({timeout})                       *vim.async.Task:pwait()*
+
+    Protected-call version of `wait()`.
+
+    Does not throw an error if the task fails or times out. Instead, returns
+    the status and the results.
+
     Parameters: ~
     - {timeout} (`integer?`)
 
@@ -709,6 +761,11 @@ vim.async.Task:pwait({timeout})                       *vim.async.Task:pwait()*
 
 ------------------------------------------------------------------------------
 vim.async.Task:detach()                              *vim.async.Task:detach()*
+
+    Detach a task from its parent.
+
+    The task becomes a top-level task.
+
     Returns: ~
     - (`vim.async.Task`) (See |vim.async.Task|)
 
@@ -742,6 +799,18 @@ vim.async.Task:close({callback})                      *vim.async.Task:close()*
 
     Parameters: ~
     - {callback} (`(fun())?`)
+
+
+------------------------------------------------------------------------------
+vim.async.Task:complete({...})                     *vim.async.Task:complete()*
+
+    Complete a task with the given values.
+    The task will be considered completed successfully, and any waiters will
+    be notified with the provided values. This will cancel any remaining work
+    and children tasks.
+
+    Parameters: ~
+    - {...} (`any`)
 
 
 ------------------------------------------------------------------------------

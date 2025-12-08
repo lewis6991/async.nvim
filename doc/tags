@@ -28,6 +28,7 @@ vim.async.Semaphore:with()	lua-async.txt	/*vim.async.Semaphore:with()*
 vim.async.Task	lua-async.txt	/*vim.async.Task*
 vim.async.Task.name	lua-async.txt	/*vim.async.Task.name*
 vim.async.Task:close()	lua-async.txt	/*vim.async.Task:close()*
+vim.async.Task:complete()	lua-async.txt	/*vim.async.Task:complete()*
 vim.async.Task:completed()	lua-async.txt	/*vim.async.Task:completed()*
 vim.async.Task:detach()	lua-async.txt	/*vim.async.Task:detach()*
 vim.async.Task:pwait()	lua-async.txt	/*vim.async.Task:pwait()*

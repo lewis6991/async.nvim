@@ -137,6 +137,7 @@ local MAX_TIMEOUT = 2 ^ 31 - 1
 --- @type table<thread,vim.async.Task<any>?>
 local threads = setmetatable({}, { __mode = 'k' })
 
+--- Returns the currently running task.
 --- @return vim.async.Task<any>?
 local function running()
   local task = threads[coroutine.running()]
@@ -153,6 +154,8 @@ local complete_marker = {}
 local resume_error = 'Unexpected coroutine.resume()'
 local yield_error = 'Unexpected coroutine.yield()'
 
+--- Checks the arguments of a `coroutine.resume`.
+--- This is used to ensure that a resume is expected.
 --- @generic T
 --- @param marker any
 --- @param err? any
@@ -311,6 +314,10 @@ do --- Task
     return unpack_len(res, 2)
   end
 
+  --- Protected-call version of `wait()`.
+  ---
+  --- Does not throw an error if the task fails or times out. Instead, returns
+  --- the status and the results.
   --- @param timeout integer?
   --- @return boolean, R...
   function Task:pwait(timeout)
@@ -332,6 +339,9 @@ do --- Task
     end
   end
 
+  --- Detach a task from its parent.
+  ---
+  --- The task becomes a top-level task.
   --- @return vim.async.Task
   function Task:detach()
     if self._parent then
@@ -415,6 +425,11 @@ do --- Task
     end
   end
 
+  --- Complete a task with the given values.
+  --- The task will be considered completed successfully, and any waiters will
+  --- be notified with the provided values. This will cancel any remaining work
+  --- and children tasks.
+  ---
   --- @param ... any
   function Task:complete(...)
     if not self:completed() and not self._closing then
@@ -424,6 +439,7 @@ do --- Task
     end
   end
 
+  --- Checks if an object is closable, i.e., has a `close` method.
   --- @param obj any
   --- @return boolean
   --- @return_cast obj vim.async.Closable
@@ -786,6 +802,8 @@ do --- M.await()
 end
 
 --- Returns true if the current task has been closed.
+---
+--- Can be used in an async function to do cleanup when a task is closing.
 --- @return boolean
 function M.is_closing()
   local task = running()
@@ -982,6 +1000,27 @@ do --- M.iter(), M.await_all(), M.await_any()
     return results
   end
 
+  --- Wait for the first task to complete and return its result.
+  ---
+  --- Example:
+  --- ```lua
+  --- local task1 = vim.async.run(function()
+  ---   vim.async.sleep(100)
+  ---   return 1, 'a'
+  --- end)
+  ---
+  --- local task2 = vim.async.run(function()
+  ---   return 2, 'b'
+  --- end)
+  ---
+  --- vim.async.run(function()
+  ---   local i, err, r1, r2 = vim.async.await_any({task1, task2})
+  ---   assert(i == 2)
+  ---   assert(err == nil)
+  ---   assert(r1 == 2)
+  ---   assert(r2 == 'b')
+  --- end)
+  --- ```
   --- @async
   --- @param tasks vim.async.Task<any>[]
   --- @return integer? index
@@ -992,6 +1031,10 @@ do --- M.iter(), M.await_all(), M.await_any()
   end
 end
 
+--- Asynchronously sleep for a given duration.
+---
+--- Blocks the current task for the given duration, but does not block the main
+--- thread.
 --- @async
 --- @param duration integer ms
 function M.sleep(duration)
@@ -1056,7 +1099,7 @@ do --- M._future()
   ---
   --- If the Future’s result isn’t yet available, this method raises a
   --- "Future has not completed" error.
-  --- @return boolean stat
+  --- @return boolean stat true if the Future completed successfully, false otherwise.
   --- @return any ... error or result
   function Future:result()
     if not self:completed() then
@@ -1088,7 +1131,12 @@ do --- M._future()
     end
   end
 
-  -- Mark the Future as complete and set its err or result.
+  --- Mark the Future as complete and set its result.
+  ---
+  --- If an error is provided, the Future is marked as failed. Otherwise, it is
+  --- marked as successful with the provided result.
+  ---
+  --- This will trigger any callbacks that are waiting on the Future.
   --- @param err? any
   --- @param ... any result
   function Future:complete(err, ...)
@@ -1112,6 +1160,8 @@ do --- M._future()
     end
   end
 
+  --- @package
+  --- Removes a callback from the Future.
   --- @param cb fun(err?: any, ...: any)
   function Future:_remove_cb(cb)
     for j, fcb in pairs(self._callbacks) do
@@ -1122,7 +1172,11 @@ do --- M._future()
     end
   end
 
-  --- Create a new future
+  --- @package
+  --- Create a new future.
+  ---
+  --- A Future is a low-level awaitable that is not intended to be used in
+  --- application-level code.
   --- @return vim.async.Future
   function M._future()
     return setmetatable({
@@ -1147,6 +1201,9 @@ do --- M._event()
   --- Set the event.
   ---
   --- All tasks waiting for event to be set will be immediately awakened.
+  ---
+  --- If `max_woken` is provided, only up to `max_woken` waiters will be woken.
+  --- The event will be reset to `false` if there are more waiters remaining.
   --- @param max_woken? integer
   function Event:set(max_woken)
     if self._is_set then
@@ -1169,8 +1226,8 @@ do --- M._event()
 
   --- Wait until the event is set.
   ---
-  --- If the event is set, return `true` immediately. Otherwise block until
-  --- another task calls set().
+  --- If the event is set, return immediately. Otherwise block until another
+  --- task calls set().
   --- @async
   function Event:wait()
     M.await(function(callback)
@@ -1190,26 +1247,27 @@ do --- M._event()
     self._is_set = false
   end
 
-  --- Create a new event
+  --- @package
+  --- Create a new event.
   ---
   --- An event can signal to multiple listeners to resume execution
   --- The event can be set from a non-async context.
   ---
   --- ```lua
-  ---  local event = vim.async.event()
+  ---  local event = vim.async._event()
   ---
   ---  local worker = vim.async.run(function()
-  ---    sleep(1000)
+  ---    vim.async.sleep(1000)
   ---    event.set()
   ---  end)
   ---
   ---  local listeners = {
   ---    vim.async.run(function()
-  ---      event.wait()
+  ---      event:wait()
   ---      print("First listener notified")
   ---    end),
   ---    vim.async.run(function()
-  ---      event.wait()
+  ---      event:wait()
   ---      print("Second listener notified")
   ---    end),
   ---  }
@@ -1234,17 +1292,21 @@ do --- M._queue()
   local Queue = {}
   Queue.__index = Queue
 
-  --- Returns the number of items in the queue
+  --- Returns the number of items in the queue.
+  --- @return integer
   function Queue:size()
     return self._right_i - self._left_i
   end
 
-  --- Returns the maximum number of items in the queue
+  --- Returns the maximum number of items in the queue.
+  --- @return integer?
   function Queue:max_size()
     return self._max_size
   end
 
-  --- Put a value into the queue
+  --- Put an item into the queue.
+  ---
+  --- If the queue is full, wait until a free slot is available.
   --- @async
   --- @param value any
   function Queue:put(value)
@@ -1252,15 +1314,20 @@ do --- M._queue()
     self:put_nowait(value)
   end
 
-  --- Get a value from the queue, blocking if the queue is empty
+  --- Get an item from the queue.
+  ---
+  --- If the queue is empty, wait until an item is available.
   --- @async
+  --- @return any
   function Queue:get()
     self._non_empty:wait()
     return self:get_nowait()
   end
 
-  --- Get a value from the queue, erroring if queue is empty.
-  --- If the queue is empty, raise "Queue is empty" error.
+  --- Get an item from the queue without blocking.
+  ---
+  --- If the queue is empty, raise an error.
+  --- @return any
   function Queue:get_nowait()
     if self:size() == 0 then
       error('Queue is empty', 2)
@@ -1291,26 +1358,29 @@ do --- M._queue()
     end
   end
 
+  --- @package
   --- Create a new FIFO queue with async support.
   --- ```lua
-  ---  local queue = vim.async.queue()
+  ---  local queue = vim.async._queue()
   ---
   ---  local producer = vim.async.run(function()
   ---    for i = 1, 10 do
-  ---      sleep(100)
+  ---      vim.async.sleep(100)
   ---      queue:put(i)
   ---    end
   ---    queue:put(nil)
   ---  end)
   ---
-  ---  while true do
-  ---    local value = queue:get()
-  ---    if value == nil then
-  ---      break
+  ---  vim.async.run(function()
+  ---    while true do
+  ---      local value = queue:get()
+  ---      if value == nil then
+  ---        break
+  ---      end
+  ---      print(value)
   ---    end
-  ---    print(value)
-  ---  end
-  ---  print("Done")
+  ---    print("Done")
+  ---  end)
   --- ```
   --- @param max_size? integer The maximum number of items in the queue, defaults to no limit
   --- @return vim.async.Queue
@@ -1345,8 +1415,10 @@ do --- M.semaphore()
   local Semaphore = {}
   Semaphore.__index = Semaphore
 
-  --- Executes the given function within the semaphore's context, ensuring
-  --- that the semaphore's constraints are respected.
+  --- Executes a function within the semaphore.
+  ---
+  --- This acquires the semaphore before running the function and releases it
+  --- after the function completes, even if it errors.
   --- @async
   --- @generic R
   --- @param fn async fun(): R... # Function to execute within the semaphore's context.
@@ -1402,7 +1474,7 @@ do --- M.semaphore()
   ---     tasks[i] = vim.async.run(function()
   ---       semaphore:with(function()
   ---         value = value + 1
-  ---         sleep(10)
+  ---         vim.async.sleep(10)
   ---         print(value) -- Never more than 2
   ---         value = value - 1
   ---       end)
