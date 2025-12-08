@@ -148,6 +148,7 @@ end
 --- Internal marker used to identify that a yielded value is an asynchronous yielding.
 local yield_marker = {}
 local resume_marker = {}
+local complete_marker = {}
 
 local resume_error = 'Unexpected coroutine.resume()'
 local yield_error = 'Unexpected coroutine.yield()'
@@ -232,6 +233,7 @@ do --- Task
       name = opts.name,
       _internal = opts._internal,
       _closing = false,
+      _is_completing = false,
       _thread = thread,
       _future = M._future(),
       _children = {},
@@ -413,6 +415,15 @@ do --- Task
     end
   end
 
+  --- @param ... any
+  function Task:complete(...)
+    if not self:completed() and not self._closing then
+      self._is_completing = true
+      self._closing = true
+      self:_raise({ complete_marker, pack_len(...) })
+    end
+  end
+
   --- @param obj any
   --- @return boolean
   --- @return_cast obj vim.async.Closable
@@ -448,10 +459,15 @@ do --- Task
         threads[task._thread] = nil
 
         if not stat then
-          local err = (...) or 'unknown error'
-          task._future:complete(err)
-          if parent and not task._closing then
-            parent:_raise('child error: ' .. err)
+          local err = ...
+          if type(err) == 'table' and err[1] == complete_marker then
+            task._future:complete(nil, unpack_len(err[2]))
+          else
+            local err_msg = err or 'unknown error'
+            task._future:complete(err_msg)
+            if parent and not task._closing then
+              parent:_raise('child error: ' .. tostring(err_msg))
+            end
           end
         else
           task._future:complete(nil, ...)
@@ -541,6 +557,9 @@ do --- Task
     --- @package
     --- @param ... any the first argument is the error, except for when the coroutine begins
     function Task:_resume(...)
+      if self._is_completing and select(1, ...) == 'closed' then
+        return
+      end
       --- @type {[integer]: any, n: integer}?
       local args = pack_len(...)
 
