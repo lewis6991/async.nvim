@@ -1,7 +1,6 @@
-async-context	lua-async.txt	/*async-context*
-async-error-handling	lua-async.txt	/*async-error-handling*
-async-function	lua-async.txt	/*async-function*
-async-task-ownership	lua-async.txt	/*async-task-ownership*
+Example	lua-async.txt	/*Example*
+is	lua-async.txt	/*is*
+not	lua-async.txt	/*not*
 vim.async	lua-async.txt	/*vim.async*
 vim.async.Closable	lua-async.txt	/*vim.async.Closable*
 vim.async.Closable.close	lua-async.txt	/*vim.async.Closable.close*
@@ -49,3 +48,4 @@ vim.async.semaphore()	lua-async.txt	/*vim.async.semaphore()*
 vim.async.sleep()	lua-async.txt	/*vim.async.sleep()*
 vim.async.timeout()	lua-async.txt	/*vim.async.timeout()*
 vim.async.wrap()	lua-async.txt	/*vim.async.wrap()*
+within	lua-async.txt	/*within*

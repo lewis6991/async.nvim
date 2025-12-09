@@ -2,124 +2,210 @@
 *vim.async*
 
 This module implements an asynchronous programming library for Neovim,
-enabling developers to write non-blocking, coroutine-based code. Below is a
-summary of its key features and components:
+centered around the principle of **Structured Concurrency**. This design
+makes concurrent programs easier to reason about, more reliable, and less
+prone to resource leaks.
 
-1. Async Contexts:
-- Functions can run asynchronously using Lua coroutines.
-- Async functions are annotated with `@async` and must run within an async context.
+                                       *Core Philosophy: Structured Concurrency*
 
-2. Task Management:
-- Create tasks with `vim.async.run()`.
-- Tasks be awaited, closed, or waited synchronously.
+Every async operation happens within a "concurrency scope", which is represented
+by a |vim.async.Task| object created with `vim.async.run()`. This creates a
+parent-child relationship between tasks, with the following guarantees:
 
-3. Awaiting:
-- |vim.async.await()|: Allows blocking on asynchronous operations, such as
-tasks or callback-based functions.
-- Supports overloads for tasks, and callback functions.
+1.  **Task Lifetime:** A parent task's scope cannot end until all of its
+child tasks have completed. The parent *implicitly waits* for its children,
+preventing orphaned or "fire-and-forget" tasks.
 
-4. Task Wrapping:
-- |vim.async.wrap()|: Converts any callback-based functions into async functions.
+2.  **Error Propagation:** If a child task fails with an error, the error is
+propagated up to its parent.
 
-5. Concurrency Utilities:
-- |vim.async.iter()|: Iterates over multiple tasks, yielding their results as
-they complete.
-- |vim.async.await_all()|: Waits for all tasks to complete and collects their
-results.
-- |vim.async.await_any()|: Waits for the first task to complete and returns its
-result.
+3.  **Cancellation Propagation:** If a parent task is cancelled (e.g., via
+`:close()`), the cancellation is propagated down to all of its children.
 
-6. Synchronization Primitives:
-- |vim.async.event()|: Implements an event signaling mechanism for tasks to
-wait and notify.
-- |vim.async.queue()|: A thread-safe FIFO queue for producer-consumer patterns.
-- |vim.async.semaphore()|: Limits concurrent access to shared resources.
+This model ensures that all concurrent tasks form a clean, hierarchical tree,
+and control flow is always well-defined.
 
-7. Error Handling:
-- Errors in async tasks are propagated and can be raised or handled explicitly.
-- Provides methods like |vim.async.Task:traceback()| for debugging.
+                             *Stackful vs. Stackless Coroutines (Green Threads)*
 
-Examples:
+A key architectural feature of `async.nvim` is that it is built on Lua's
+native **stackful coroutines**. This provides a significant advantage over the
+`async/await` implementations in many other popular languages, though it's
+important to clarify its role in the "function coloring" problem.
+
+- **Stackful (Lua, Go):** A stackful coroutine has its own dedicated call
+stack, much like a traditional OS thread (and are often called "green threads"
+or "virtual threads"). This allows a coroutine to be suspended from deep
+within a nested function call. When using `async.nvim`, `vim.async.run()`
+serves as the explicit entry point to an asynchronous context (similar to
+Go's `go` keyword). However, *within* that `async.run()` context,
+intermediate synchronous helper functions do *not* need to be specially
+marked. This means if function `A` calls `B` calls `C`, and `C` performs
+an `await`, `A` and `B` can remain regular Lua functions as long as they are
+called from within an `async.run()` context. This significantly reduces the
+viral spread of "coloring".
+
+- **Stackless (JavaScript, Python, Swift, C#, Kotlin):** Most languages
+implement `async/await` with stackless coroutines. A function that can
+be suspended must be explicitly marked with a keyword (like `async` or
+`suspend`). This requirement is "viral"—any function that calls an `async`
+function must itself be marked `async`, and so on up the call stack. This
+is the typical "function coloring" problem.
+
+Because Lua provides stackful coroutines, `async.nvim` allows you to `await`
+from deeply nested synchronous functions *within an async context* without
+"coloring" those intermediate callers. This makes concurrent code less
+intrusive and easier to integrate with existing synchronous code, despite
+`async.run()` providing an explicit boundary for the async operations.
+
+                                                                  *Key Features*
+
+- **Task Scopes:** Create a new concurrency scope with `vim.async.run()`.
+The returned |vim.async.Task| object acts as the parent for any other
+tasks started within its function.
+
+- **Awaiting:** Suspend execution and wait for an operation to complete using
+`vim.async.await()`. This can be used on other tasks or on callback-based
+functions.
+
+- **Callback Wrapping:** Convert traditional callback-based functions into
+modern async functions with `vim.async.wrap()`.
+
+- **Concurrency Utilities:** `await_all`, `await_any`, and `iter` provide
+powerful tools for managing groups of tasks.
+
+- **Synchronization Primitives:** `event`, `queue`, and `semaphore` are
+available for more complex coordination patterns.
+
+                                                                       *Example*
+
 >lua
+ -- Create an async version of vim.system
+ local system = vim.async.wrap(3, vim.system)
 
-   -- Create an async version of vim.system
-   local system = vim.async.wrap(3, vim.system)
+ -- vim.async.run() creates a parent task scope.
+ local parent_task = vim.async.run(function()
+   -- These child tasks are launched within the parent's scope.
+   local ls_task = system({ 'ls', '-l' })
+   local date_task = system({ 'date' })
 
-   -- Create an async-context using run
-   vim.async.run(function()
-     local obj_ls = system({'ls'})
-     vim.async.sleep(200)
-     local obj_cat = system({'cat', 'file'})
-   end)
+   -- The parent task will not complete until both ls_task and
+   -- date_task have finished, even without an explicit 'await'.
+ end)
+
+ -- Wait for the parent and all its children to complete.
+ parent_task:wait()
 <
 
-                                                                *async-function*
+                                        *Structured Concurrency and Task Scopes*
 
-Async functions are functions that must run in an |async-context| because
-they contain at least one call to `async.await()`` that yields to event
-loop.
-
-These functions can be executed directly using `async.run()` which runs the
-function in an async context.
-
-Use the `@async` annotation to mark a function as an async function.
-
-                                                                 *async-context*
-
-An async-context is an execution context managed by `vim.async` and is
-implemented via |lua-coroutine|s. Only |async-functions| can run in an
-async-context.
-
-                                                          *async-error-handling*
-
-Errors are handled differently depending on whether a function is called in
-a blocking or non-blocking manner.
-
-If a function is waited in a blocking call (via |async.await()| or
-|async.Task:wait()| with `nil` or a timeout), errors are raised in the
-calling thread.
-
-If a function is waited in a non-blocking way (via |async.Task:wait()| with
-a callback), errors are passed as part of the result in the form of `(err?,
-...)`, where `err` is the error message and `...` are the results of the
-function when there is no error.
-
-To run a Task without waiting for the result while still raising
-any errors, use |async.Task:raise_on_error()|.
-
-                                                          *async-task-ownership*
-
-Tasks are owned by the async context they are created in.
+Every call to `vim.async.run(fn)` creates a new |vim.async.Task| that establishes
+a concurrency scope. Any other tasks started inside `fn` become children of this
+task.
 
 >lua
- local t1 = async.run(function() ... end)
+ -- t1 is a top-level task with no parent.
+ local t1 = async.run(function() vim.async.sleep(50) end)
 
  local main = async.run(function()
-   local child = async.run(function() ... end)
+   -- 'child' is created within main's scope, so 'main' is its parent.
+   local child = async.run(function() vim.async.sleep(100) end)
 
-   -- child created in the main async context, owned by main.
-   -- Calls to `main:close()` will propagate to child.
-   async.await(child)
+   -- Because 'main' is the parent, it implicitly waits for 'child'
+   -- to complete before it can complete itself.
+
+   -- Cancellation is also propagated down the tree.
+   -- Calling main:close() will also call child:close().
 
    -- t1 created outside of the main async context.
+   -- It has no parent, so 'main' does not implicitly wait for it.
    async.await(t1)
  end)
 
- main:close() -- calls `child:close()` but not `t1:close()`
+ -- This will wait for ~100ms, as 'main' must wait for 'child'.
+ main:wait()
 <
 
-When a parent task finishes, if finishes normally without an error, it will
-await all of its children tasks before it completes. If it finishes with an
-error, it close all of its children tasks.
+If a parent task finishes with an error, it will immediately cancel all of its
+running child tasks. If it finishes normally, it implicitly waits for them to
+complete normally.
 
->lua
- local main = async.run(function()
-   local child1 = async.run(function() ... end)
-   local child2 = async.run(function() ... end)
-   -- as neither child1 or child2 are awaited, they will be closed
-   -- when main finishes.
- end)
-<
+                                                 *Comparison with Python's Trio*
+
+The design of `async.nvim` is heavily inspired by Python's `trio` library,
+and it implements the same core philosophy of **Structured Concurrency**.
+Both libraries guarantee that all tasks are run in a hierarchy, preventing
+leaked or "orphaned" tasks and ensuring that cancellation and errors
+propagate predictably.
+
+Trio uses an explicit `nursery` object. To spawn child tasks, you must
+create a nursery scope (e.g., `async with trio.open_nursery() as nursery:`),
+and the nursery block defines the lifetime of the child tasks.
+
+async.nvim unifies the concepts of a task and a concurrency scope.
+The |vim.async.Task| object returned by `vim.async.run()` *is* the scope.
+In essence, `async.nvim` provides the same safety and clarity as `trio` but
+adapts the concepts idiomatically for Lua and Neovim.
+
+                                         *Comparison with JavaScript's Promises*
+
+JavaScript's `async/await` model with Promises is fundamentally **unstructured**.
+While tools like `Promise.all` can coordinate multiple promises, the language
+provides no built-in "scope" that automatically manages child tasks.
+
+An `async` function call in JavaScript returns a Promise
+that runs independently. If it is not explicitly awaited, it can easily
+become an "orphaned" task.
+
+Cancellation is manual and opt-in via the `AbortController`
+and `AbortSignal` pattern. It does not automatically propagate from a parent
+scope to child operations.
+
+`async.nvim`'s structured model contrasts with this by providing automatic
+cleanup and cancellation, preventing common issues like resource leaks from
+forgotten background tasks.
+
+                                             *Comparison with Swift Concurrency*
+
+Swift's concurrency model maps closely to `async.nvim`.
+
+Swift's `TaskGroup` is analogous to the concurrency scope
+created by `vim.async.run()`. The group's scope cannot exit until all
+child tasks added to it are complete.
+
+In both Swift and `async.nvim`, cancelling a parent task
+automatically propagates a cancellation notice down to all of its children.
+
+                                             *Comparison with Kotlin Coroutines*
+
+Kotlin's Coroutine framework is another system built on **Structured Concurrency**,
+and it shares a nearly identical philosophy with `async.nvim`.
+
+In Kotlin, a `coroutineScope` function creates a new
+scope. The scope is guaranteed not to complete until all coroutines
+launched within it have also completed. This is conceptually the same as
+the scope created by `vim.async.run()`.
+
+Like `async.nvim`, cancellation and errors
+propagate automatically through the task hierarchy. Cancelling a parent scope
+cancels its children, and an exception in a child will cancel the parent.
+
+                                                 *Comparison with Go Goroutines*
+
+Go's concurrency model, while powerful, is fundamentally **unstructured**.
+Launching a `go` routine is a "fire-and-forget" operation with no implicit
+parent-child relationship.
+
+Programmers must manually track groups of goroutines,
+typically using a `sync.WaitGroup` to ensure they all complete before
+proceeding.
+
+Cancellation and deadlines are handled by
+explicitly passing a `context` object through the entire call stack. There
+is no automatic propagation of cancellation or errors up or down a task tree.
+
+This contrasts with `async.nvim`, where the structured concurrency model
+automates the lifetime, cancellation, and error management that must be
+handled explicitly in Go.
 
 ------------------------------------------------------------------------------
 vim.async.run({...})                                         *vim.async.run()*
@@ -804,13 +890,22 @@ vim.async.Task:close({callback})                      *vim.async.Task:close()*
 ------------------------------------------------------------------------------
 vim.async.Task:complete({...})                     *vim.async.Task:complete()*
 
-    Complete a task with the given values.
-    The task will be considered completed successfully, and any waiters will
-    be notified with the provided values. This will cancel any remaining work
-    and children tasks.
+    Complete a task with the given values, cancelling any remaining work.
+
+    This marks the task as successfully completed and notifies any waiters with
+    the provided values. It also initiates the cancellation of all
+    running child tasks.
+
+    A primary use case is for "race" scenarios. A child task can acquire a
+    reference to its parent task and call `complete()` on it. This signals
+    that the overall goal of the parent scope has been met, which immediately
+    triggers the cancellation of all sibling tasks.
+
+    This provides a built-in pattern for "first-to-finish" logic, such as
+    querying multiple data sources and taking the first response.
 
     Parameters: ~
-    - {...} (`any`)
+    - {...} (`any`): The values to complete the task with.
 
 
 ------------------------------------------------------------------------------

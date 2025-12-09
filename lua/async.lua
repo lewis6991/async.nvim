@@ -29,6 +29,38 @@ local gc_fun = util.gc_fun
 --- This model ensures that all concurrent tasks form a clean, hierarchical tree,
 --- and control flow is always well-defined.
 ---
+--- ### Stackful vs. Stackless Coroutines (Green Threads)
+---
+--- A key architectural feature of `async.nvim` is that it is built on Lua's
+--- native **stackful coroutines**. This provides a significant advantage over the
+--- `async/await` implementations in many other popular languages, though it's
+--- important to clarify its role in the "function coloring" problem.
+---
+--- - **Stackful (Lua, Go):** A stackful coroutine has its own dedicated call
+---   stack, much like a traditional OS thread (and are often called "green threads"
+---   or "virtual threads"). This allows a coroutine to be suspended from deep
+---   within a nested function call. When using `async.nvim`, `vim.async.run()`
+---   serves as the explicit entry point to an asynchronous context (similar to
+---   Go's `go` keyword). However, *within* that `async.run()` context,
+---   intermediate synchronous helper functions do *not* need to be specially
+---   marked. This means if function `A` calls `B` calls `C`, and `C` performs
+---   an `await`, `A` and `B` can remain regular Lua functions as long as they are
+---   called from within an `async.run()` context. This significantly reduces the
+---   viral spread of "coloring".
+---
+--- - **Stackless (JavaScript, Python, Swift, C#, Kotlin):** Most languages
+---   implement `async/await` with stackless coroutines. A function that can
+---   be suspended must be explicitly marked with a keyword (like `async` or
+---   `suspend`). This requirement is "viral"—any function that calls an `async`
+---   function must itself be marked `async`, and so on up the call stack. This
+---   is the typical "function coloring" problem.
+---
+--- Because Lua provides stackful coroutines, `async.nvim` allows you to `await`
+--- from deeply nested synchronous functions *within an async context* without
+--- "coloring" those intermediate callers. This makes concurrent code less
+--- intrusive and easier to integrate with existing synchronous code, despite
+--- `async.run()` providing an explicit boundary for the async operations.
+---
 --- ### Key Features
 ---
 --- - **Task Scopes:** Create a new concurrency scope with `vim.async.run()`.
@@ -100,6 +132,84 @@ local gc_fun = util.gc_fun
 --- If a parent task finishes with an error, it will immediately cancel all of its
 --- running child tasks. If it finishes normally, it implicitly waits for them to
 --- complete normally.
+---
+--- ### Comparison with Python's Trio
+---
+--- The design of `async.nvim` is heavily inspired by Python's `trio` library,
+--- and it implements the same core philosophy of **Structured Concurrency**.
+--- Both libraries guarantee that all tasks are run in a hierarchy, preventing
+--- leaked or "orphaned" tasks and ensuring that cancellation and errors
+--- propagate predictably.
+---
+--- Trio uses an explicit `nursery` object. To spawn child tasks, you must
+--- create a nursery scope (e.g., `async with trio.open_nursery() as nursery:`),
+--- and the nursery block defines the lifetime of the child tasks.
+---
+--- async.nvim unifies the concepts of a task and a concurrency scope.
+--- The [vim.async.Task] object returned by `vim.async.run()` *is* the scope.
+--- In essence, `async.nvim` provides the same safety and clarity as `trio` but
+--- adapts the concepts idiomatically for Lua and Neovim.
+---
+--- ### Comparison with JavaScript's Promises
+---
+--- JavaScript's `async/await` model with Promises is fundamentally **unstructured**.
+--- While tools like `Promise.all` can coordinate multiple promises, the language
+--- provides no built-in "scope" that automatically manages child tasks.
+---
+--- An `async` function call in JavaScript returns a Promise
+--- that runs independently. If it is not explicitly awaited, it can easily
+--- become an "orphaned" task.
+---
+--- Cancellation is manual and opt-in via the `AbortController`
+--- and `AbortSignal` pattern. It does not automatically propagate from a parent
+--- scope to child operations.
+---
+--- `async.nvim`'s structured model contrasts with this by providing automatic
+--- cleanup and cancellation, preventing common issues like resource leaks from
+--- forgotten background tasks.
+---
+--- ### Comparison with Swift Concurrency
+---
+--- Swift's concurrency model maps closely to `async.nvim`.
+---
+--- Swift's `TaskGroup` is analogous to the concurrency scope
+--- created by `vim.async.run()`. The group's scope cannot exit until all
+--- child tasks added to it are complete.
+---
+--- In both Swift and `async.nvim`, cancelling a parent task
+--- automatically propagates a cancellation notice down to all of its children.
+---
+--- ### Comparison with Kotlin Coroutines
+---
+--- Kotlin's Coroutine framework is another system built on **Structured Concurrency**,
+--- and it shares a nearly identical philosophy with `async.nvim`.
+---
+--- In Kotlin, a `coroutineScope` function creates a new
+--- scope. The scope is guaranteed not to complete until all coroutines
+--- launched within it have also completed. This is conceptually the same as
+--- the scope created by `vim.async.run()`.
+---
+--- Like `async.nvim`, cancellation and errors
+--- propagate automatically through the task hierarchy. Cancelling a parent scope
+--- cancels its children, and an exception in a child will cancel the parent.
+---
+--- ### Comparison with Go Goroutines
+---
+--- Go's concurrency model, while powerful, is fundamentally **unstructured**.
+--- Launching a `go` routine is a "fire-and-forget" operation with no implicit
+--- parent-child relationship.
+---
+--- Programmers must manually track groups of goroutines,
+--- typically using a `sync.WaitGroup` to ensure they all complete before
+--- proceeding.
+---
+--- Cancellation and deadlines are handled by
+--- explicitly passing a `context` object through the entire call stack. There
+--- is no automatic propagation of cancellation or errors up or down a task tree.
+---
+--- This contrasts with `async.nvim`, where the structured concurrency model
+--- automates the lifetime, cancellation, and error management that must be
+--- handled explicitly in Go.
 ---
 --- @class vim.async
 local M = {}
