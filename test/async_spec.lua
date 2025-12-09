@@ -849,4 +849,49 @@ parent@test/async_spec.lua:%d+ %[normal%]
     eq(123, r2)
     check_task_err(child, 'closed')
   end)
+
+  it_exec('handles race condition of children completing parent', function()
+    local parent_task
+    local child2_task
+    parent_task = run(function()
+      run(function()
+        Async.sleep(10)
+        parent_task:complete('child 1 won')
+      end)
+      child2_task = run(function()
+        Async.sleep(50)
+        parent_task:complete('child 2 won')
+      end)
+      -- Parent must wait indefinitely for a child to complete it
+      eternity()
+    end)
+
+    local result = parent_task:wait(100)
+    eq('child 1 won', result)
+    check_task_err(child2_task, 'closed')
+  end)
+
+  it_exec('handles simultaneous calls to :complete() from scheduler', function()
+    local task = run(eternity)
+    local second_complete_error
+
+    vim.schedule(function()
+      task:complete('first call')
+    end)
+    vim.schedule(function()
+      local ok, err = pcall(function()
+        task:complete('second call')
+      end)
+      if not ok then
+        second_complete_error = err
+      end
+    end)
+
+    local result = task:wait(100)
+    eq('first call', result) -- First call still wins for the task's result
+
+    -- Assert that the second call indeed raised an error
+    assert(second_complete_error ~= nil, 'Second complete() call should have errored')
+    assert(second_complete_error:match('^test/async_spec.lua:%d+: Task is already completing or completed$'), 'Unexpected error message: ' .. second_complete_error)
+  end)
 end)

@@ -372,7 +372,7 @@ do --- Task
   end
 
   --- @package
-  --- @param err string
+  --- @param err any
   function Task:_raise(err)
     if self:status() == 'running' then
       -- TODO(lewis6991): is there a better way to do this?
@@ -417,11 +417,12 @@ do --- Task
   ---
   --- @param ... any The values to complete the task with.
   function Task:complete(...)
-    if not self:completed() and not self._closing then
-      self._is_completing = true
-      self._closing = true
-      self:_raise({ complete_marker, pack_len(...) })
+    if self:completed() or self._closing then
+      error('Task is already completing or completed', 2)
     end
+    self._is_completing = true
+    self._closing = true
+    self:_raise({ complete_marker, pack_len(...) })
   end
 
   --- Checks if an object is closable, i.e., has a `close` method.
