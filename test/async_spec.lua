@@ -892,6 +892,11 @@ parent@test/async_spec.lua:%d+ %[normal%]
 
     -- Assert that the second call indeed raised an error
     assert(second_complete_error ~= nil, 'Second complete() call should have errored')
-    assert(second_complete_error:match('^test/async_spec.lua:%d+: Task is already completing or completed$'), 'Unexpected error message: ' .. second_complete_error)
+    assert(
+      second_complete_error:match(
+        '^test/async_spec.lua:%d+: Task is already completing or completed$'
+      ),
+      'Unexpected error message: ' .. second_complete_error
+    )
   end)
 end)

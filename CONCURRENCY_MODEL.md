@@ -24,8 +24,10 @@ Just as you can't return from a function while a nested block is still running, 
 
 The structured concurrency model rests on three fundamental rules:
 
-**Parents wait for children.** When you create a task inside another task, the parent will not complete until all its children finish.
-This is automatic—you don't need to explicitly wait.
+### Parents wait for children.
+
+When you create a task inside another task, the parent will not complete until all its children finish.
+This is automatic-you don't need to explicitly wait.
 Consider this code:
 
 ```lua
@@ -33,11 +35,11 @@ local parent = vim.async.run(function()
   local child1 = vim.async.run(function()
     vim.async.sleep(100)
   end)
-  
+
   local child2 = vim.async.run(function()
     vim.async.sleep(50)
   end)
-  
+
   print("done")  -- This runs immediately
 end)
 
@@ -48,9 +50,10 @@ The print happens right away because the parent's function body completes quickl
 However, the parent task itself doesn't complete until both children finish.
 You can't have orphaned tasks in this model.
 
-**Errors propagate up.** When a child task errors, that error automatically propagates to its parent when the parent resumes.
+### Errors propagate up
+
+When a child task errors, that error automatically propagates to its parent.
 The parent will then cancel any other running children and fail with the child's error.
-This propagation is **level-triggered**: the error is delivered when the parent resumes from suspension, not immediately when the child errors.
 
 ```lua
 local parent = vim.async.run(function()
@@ -58,15 +61,15 @@ local parent = vim.async.run(function()
     vim.async.sleep(10)
     error("child1 failed")  -- child1 errors and completes
   end)
-  
+
   local child2 = vim.async.run(function()
     vim.async.sleep(1000)  -- Long running
   end)
-  
+
   -- Parent continues running synchronously
-  -- While parent runs, children are suspended
+  -- While parent runs, children are suspended until the sleep is finished
   local x = compute_something()
-  
+
   -- Parent suspends here, giving children a chance to run
   -- When parent resumes, the error from child1 is delivered:
   vim.async.sleep(100)  -- Error surfaces when parent resumes here
@@ -74,8 +77,9 @@ local parent = vim.async.run(function()
 end)
 ```
 
-**Cancellation propagates down.** When you cancel a task, all its children are cancelled too.
-Calling `close()` on a task acts as a suspension point that can immediately deliver cancellation to the target task:
+### Cancellation propagates down
+
+When you cancel a task, all its children are cancelled too.
 
 ```lua
 local parent = vim.async.run(function()
@@ -83,7 +87,7 @@ local parent = vim.async.run(function()
     vim.async.sleep(1000)
     print("This won't run if parent is closed")
   end)
-  
+
   vim.async.sleep(100)
   print("Parent completed normally")
 end)
@@ -126,7 +130,7 @@ local main = vim.async.run(function()
   local child = vim.async.run(function()
     vim.async.sleep(100)
   end)
-  
+
   -- t1 has no parent, so we must explicitly await it
   vim.async.await(t1)
 end)
@@ -139,13 +143,11 @@ local parent = vim.async.run(function()
   local background = vim.async.run(function()
     -- Long-running background work
   end):detach()
-  
+
   -- Parent completes without waiting for background
 end)
 ```
 
-But detachment should be used sparingly.
-The default structured approach catches more bugs.
 
 ## Stackful Coroutines and Function Coloring
 
@@ -179,8 +181,7 @@ A coroutine has its own call stack, and it can be suspended from anywhere in tha
 ```lua
 -- Regular Lua functions - no special marking
 local function fetch_user(id)
-  return do_fetch('/users/' ..
-id)
+  return do_fetch('/users/' .. id)
 end
 
 local function get_user_name(id)
@@ -206,7 +207,6 @@ You still need an explicit boundary (the `vim.async.run()` call) to create the a
 
 This is similar to how Go handles concurrency.
 You use the `go` keyword to start a goroutine, but once you're inside that goroutine, you don't need special syntax for blocking operations.
-The key difference is that async.nvim adds structure—unlike Go goroutines, tasks in async.nvim form a hierarchy with automatic cleanup.
 
 ## How Tasks Execute
 
@@ -232,21 +232,19 @@ A task can be in several states.
 It's "running" when actively executing code, "awaiting" when suspended for an operation, "normal" when active but not running (this happens when it's starting another task), and "completed" when finished.
 You can check this with `task:status()`.
 
-The implementation uses a marker-based protocol to prevent misuse of coroutines.
-You can't accidentally call `coroutine.yield()` or `coroutine.resume()` on a task—the library enforces that all yielding and resuming goes through the proper async mechanisms.
+You can't accidentally call `coroutine.yield()` or `coroutine.resume()` on a task as the library enforces that all yielding and resuming goes through the proper async mechanisms.
 
 ## Error Handling
 
 Errors flow upward through the task tree.
-When a child task errors, that error propagates to its parent when the parent resumes execution.
+When a child task errors, that error propagates immediately to its parent.
 The parent will cancel any other running children and then fail with the child's error.
 
 Understanding error propagation requires understanding the execution model.
-Only one task executes at a time—all others are suspended.
+As Nvim's Lua runtime is single-threaded, only one task executes at a time and all others are suspended.
 When a task is actively running synchronous code, no other tasks can run.
 When a task suspends (via `await`, `sleep`, etc.), control returns to the event loop, which can resume other tasks.
 
-Errors are **level-triggered**: they're delivered when a task resumes, not at arbitrary points during execution.
 When a child errors, the parent's pending operation is cancelled and the parent resumes immediately with the error:
 
 ```lua
@@ -255,18 +253,18 @@ local parent = vim.async.run(function()
     vim.async.sleep(50)
     error("something broke")  -- child1 errors at 50ms
   end)
-  
+
   local child2 = vim.async.run(function()
     while true do
       vim.async.sleep(10)
     end
   end)
-  
+
   -- Parent is running synchronously here
   -- child1 and child2 are suspended, cannot run yet
   print("Still running...")
   local x = 1 + 1
-  
+
   -- Parent suspends here, event loop takes over
   -- Event loop resumes child1, which sleeps 50ms then errors
   -- The parent's sleep is cancelled at 50ms
@@ -277,7 +275,7 @@ end)
 
 Here's what happens step by step:
 
-1. Parent runs synchronously, creating children (children are suspended)
+1. Parent runs synchronously, creating children (children are suspended when they execute `await` calls)
 2. Parent suspends (e.g., calls `sleep`), event loop takes over
 3. Event loop resumes child tasks, giving them a chance to run
 4. If a child errors while parent is suspended, the parent's pending operation is cancelled
@@ -291,13 +289,13 @@ vim.async.run(function()
     vim.async.sleep(10)
     error("child failed")
   end)
-  
+
   -- This entire synchronous block runs uninterrupted
   -- child is suspended, cannot run during this
   for i = 1, 1000000 do
     math.sqrt(i)
   end
-  
+
   -- Parent suspends here (wants to wait 1000ms)
   -- Event loop resumes child
   -- child sleeps 10ms, then errors
@@ -314,20 +312,126 @@ You can catch errors with standard Lua pcall:
 ```lua
 vim.async.run(function()
   local child = vim.async.run(risky_operation)
-  
+
   local x = compute_something()  -- Runs synchronously while child suspended
-  
+
   local ok, result = pcall(function()
     -- Parent suspends, event loop runs child
     -- If child errors, sleep is cancelled and parent resumes with error
     vim.async.sleep(1)
   end)
-  
+
   if not ok then
     print("Caught error:", result)
   end
 end)
 ```
+
+### Level-Triggered Errors
+
+async.nvim implements **level-triggered error propagation**.
+This term comes from hardware and signal processing, where systems can respond to conditions in two ways:
+
+- **Edge-triggered**: An event fires once when a condition transitions from false to true (e.g., OK → Error). If you miss the event, it's gone.
+- **Level-triggered**: An event fires continuously as long as the condition remains true. The condition is checked repeatedly.
+
+In async.nvim, when a child task fails, the error condition persists until the child is no longer in scope or explicitly handled. [FIXME: not true. currently the implementation
+If a parent catches an error with `pcall` but continues execution and hits another `await`, the error will be re-issued because the child's failed state still exists:
+
+```lua
+vim.async.run(function()
+  local child = vim.async.run(function()
+    vim.async.sleep(10)
+    error("child failed")
+  end)
+
+  -- First await - error is caught
+  local ok, err = pcall(function()
+    vim.async.sleep(100)  -- Child error delivered here
+  end)
+  
+  if not ok then
+    print("Caught first error:", err)
+    -- Error was caught, but child is still in error state
+  end
+  
+  -- Second await - error is re-issued!
+  vim.async.sleep(1)  -- Error thrown again because child still failed
+end)
+```
+
+To properly handle errors without re-issuing, you have several options:
+
+**Option 1: Wrap the entire scope containing the child**
+
+```lua
+vim.async.run(function()
+  local ok, result = pcall(function()
+    local child = vim.async.run(risky_operation)
+    
+    -- Do work that may await multiple times
+    vim.async.sleep(100)
+    process_data()
+    vim.async.sleep(200)
+    
+    -- Child goes out of scope when pcall completes
+    return get_result()
+  end)
+  
+  if not ok then
+    print("Child failed:", result)
+    -- Child is no longer in scope, safe to continue
+  end
+  
+  vim.async.sleep(50)  -- No error re-issued here
+end)
+```
+
+**Option 2: Use `pwait()` directly on the child task**
+
+```lua
+vim.async.run(function()
+  local child = vim.async.run(risky_operation)
+  
+  vim.async.sleep(50)  -- Do some work while child runs
+  
+  -- Explicitly wait for child and get its status
+  local ok, result = child:pwait(1000)
+  
+  if not ok then
+    print("Child failed:", result)
+    -- Child has been awaited, error is resolved
+  end
+  
+  vim.async.sleep(100)  -- No error re-issued here
+end)
+```
+
+**Option 3: Handle the error and return or re-throw**
+
+```lua
+vim.async.run(function()
+  local child = vim.async.run(risky_operation)
+  
+  local ok, err = pcall(function()
+    vim.async.sleep(100)
+  end)
+  
+  if not ok then
+    print("Child failed:", err)
+    -- Don't continue in this function - handle and return
+    return nil, err
+  end
+  
+  -- Only reached if no error occurred
+  vim.async.sleep(50)
+end)
+```
+
+This level-triggered design prevents accidentally ignoring errors.
+You cannot simply catch an error once with `pcall` and continue as if nothing happened—the failed child's state persists.
+This aligns with structured concurrency's guarantee that errors don't get lost: every suspension point checks for child errors and ensures they're handled.
+The error remains active until the failed child is no longer part of the parent's scope or has been explicitly awaited to completion.
 
 Tasks also provide a `pwait()` method that returns a status and result instead of throwing:
 
@@ -349,7 +453,7 @@ When you have nested async operations, `task:traceback()` will show you the call
 
 Cancellation flows downward through the task tree.
 When you close a task with `task:close()`, the cancellation happens immediately.
-Calling `close()` acts as a suspension point—it's a call into the async library stack, which can resume the target task and deliver the cancellation right away:
+Calling `close()` acts as a suspension point-it's a call into the async library stack, which can resume the target task and deliver the cancellation right away:
 
 ```lua
 local task = vim.async.run(function()
@@ -373,17 +477,17 @@ vim.async.run(function()
       math.sqrt(i)
     end
     -- Cancellation cannot interrupt the loop
-    
+
     -- Task suspends here
     -- Cancellation is delivered when task resumes from this sleep
     vim.async.sleep(10)
     print("This won't print")
   end)
-  
+
   -- Parent calls close() immediately
   -- Child task is marked for cancellation
   task:close()
-  
+
   -- Parent suspends, allowing child to run
   -- Child executes the loop, then suspends at sleep
   -- Cancellation is delivered when child would resume from sleep
@@ -397,19 +501,19 @@ When a parent is closed, all its children are cancelled recursively:
 local parent = vim.async.run(function()
   local child1 = vim.async.run(function()
     local grandchild = vim.async.run(function()
-      while true do 
+      while true do
         vim.async.sleep(10)
       end
     end)
     vim.async.await(grandchild)
   end)
-  
+
   local child2 = vim.async.run(function()
-    while true do 
+    while true do
       vim.async.sleep(10)
     end
   end)
-  
+
   -- Parent does some work
   vim.async.sleep(100)
 end)
@@ -422,12 +526,12 @@ Tasks can check if they're being cancelled and clean up gracefully:
 ```lua
 vim.async.run(function()
   local resource = acquire_resource()
-  
+
   while not vim.async.is_closing() do
     do_work(resource)
     vim.async.sleep(10)
   end
-  
+
   resource:cleanup()
   print("Shut down gracefully")
 end)
@@ -446,7 +550,7 @@ vim.async.run(function()
   vim.async.await(function(callback)
     local timer = vim.uv.new_timer()
     timer:start(1000, 0, callback)
-    
+
     -- Return the timer - it will be closed automatically
     return timer
   end)
@@ -461,13 +565,13 @@ For resources that don't auto-close, you can use pcall to ensure cleanup:
 ```lua
 vim.async.run(function()
   local file = io.open('data.txt', 'r')
-  
+
   local ok, result = pcall(function()
     return process(file:read('*all'))
   end)
-  
+
   file:close()
-  
+
   if not ok then error(result) end
   return result
 end)
@@ -479,14 +583,14 @@ Because parents wait for children, you can acquire a resource in the parent and 
 ```lua
 vim.async.run(function()
   local db = connect_to_database()
-  
+
   -- Launch multiple workers
   for i = 1, 10 do
     vim.async.run(function()
       process_batch(db, i)
     end)
   end
-  
+
   -- All workers complete before we get here
   db:close()
 end)
@@ -589,7 +693,7 @@ vim.async.run(function()
       queue:put(work_item(i))
     end
   end)
-  
+
   -- Worker pool
   local workers = {}
   for i = 1, 10 do
@@ -597,14 +701,14 @@ vim.async.run(function()
       while true do
         local item = queue:get()
         if not item then break end
-        
+
         semaphore:with(function()
           process(item)
         end)
       end
     end)
   end
-  
+
   vim.async.await_all(workers)
 end)
 ```
@@ -666,8 +770,8 @@ coroutineScope {
 
 Again, similar structure but with stackless coroutines.
 
-**Go** is unstructured.
-Goroutines are launched with no parent:
+**Go** has unstructured concurrency.
+Goroutines are launched with no implicit parent-child relationship:
 
 ```go
 go worker1()  // Fire and forget
@@ -677,7 +781,7 @@ go worker2()  // Fire and forget
 You manually track them with WaitGroups and pass context objects for cancellation.
 async.nvim automates all of this.
 
-The key insight is that structured concurrency isn't about syntax—it's about semantics.
+The key insight is that structured concurrency isn't about syntax-it's about semantics.
 The parent-child relationship, automatic waiting, error propagation, and cascading cancellation are what matter.
 async.nvim brings these benefits to Lua/Neovim while leveraging stackful coroutines to avoid function coloring.
 
@@ -717,12 +821,12 @@ parent_task = vim.async.run(function()
     local result = fetch_from_cache()
     parent_task:complete(result)
   end)
-  
+
   vim.async.run(function()
     local result = fetch_from_network()
     parent_task:complete(result)
   end)
-  
+
   -- Wait forever - children will complete the parent
   vim.async.await(function(_) end)
 end)
@@ -770,7 +874,7 @@ local background = vim.async.run(function()
     end
     vim.async.sleep(100)
   end
-  
+
   cleanup()
 end)
 
@@ -792,7 +896,7 @@ end
 ```
 
 The structured model makes these patterns safe by default.
-You don't need to worry about leaking tasks or forgetting cleanup—the structure enforces correctness.
+You don't need to worry about leaking tasks or forgetting cleanup-the structure enforces correctness.
 
 ## Final Thoughts
 
@@ -811,7 +915,7 @@ You create tasks with `vim.async.run()`, await with `vim.async.await()`, and the
 The stackful coroutine model means you don't need to mark every function in your call chain as async.
 
 For Neovim plugins, this is particularly valuable.
-Plugins often manage complex async workflows—LSP requests, file operations, user interactions.
+Plugins often manage complex async workflows-LSP requests, file operations, user interactions.
 Having a robust concurrency model prevents the subtle bugs that creep into async code.
 When you close a buffer, you can cancel all tasks associated with it and know that cleanup will happen correctly.
 When an error occurs, you get a clear stack trace across async boundaries.

@@ -544,56 +544,54 @@ do --- Task
   end
 
   do -- Task:_resume()
-    --- Should only be called in Task:_resume_co()
-    --- @generic R
-    --- @param task vim.async.Task<R>
+    --- @private
     --- @param stat boolean
     --- @param ...R... result
-    local function complete_task(task, stat, ...)
-      local has_children = next(task._children) ~= nil
-
-      --- @async
-      local function complete0(...)
-        -- TODO(lewis6991): should we collect all errors?
-        for _, child in pairs(task._children) do
-          if not stat then
-            child:close()
-          end
-          -- If child fails then it will resume the parent with an error
-          -- which is handled below
-          pcall(M.await, child)
-        end
-
-        local parent = task._parent
-        task:detach()
-
-        threads[task._thread] = nil
-
+    function Task:_finalize0(stat, ...)
+      -- TODO(lewis6991): should we collect all errors?
+      for _, child in pairs(self._children) do
         if not stat then
-          local err = ...
-          if type(err) == 'table' and err[1] == complete_marker then
-            task._future:complete(nil, unpack_len(err[2]))
-          else
-            local err_msg = err or 'unknown error'
-            task._future:complete(err_msg)
-            if parent and not task._closing then
-              parent:_raise('child error: ' .. tostring(err_msg))
-            end
-          end
-        else
-          task._future:complete(nil, ...)
+          child:close()
         end
+        -- If child fails then it will resume the parent with an error
+        -- which is handled below
+        pcall(M.await, child)
       end
 
-      -- Only run complete0() if there are children, otherwise
+      local parent = self._parent
+      self:detach()
+
+      threads[self._thread] = nil
+
+      if not stat then
+        local err = ...
+        if type(err) == 'table' and err[1] == complete_marker then
+          self._future:complete(nil, unpack_len(err[2]))
+        else
+          local err_msg = err or 'unknown error'
+          self._future:complete(err_msg)
+          if parent and not self._closing then
+            parent:_raise('child error: ' .. tostring(err_msg))
+          end
+        end
+      else
+        self._future:complete(nil, ...)
+      end
+    end
+
+    --- @private
+    --- Should only be called in Task:_resume_co()
+    --- @param stat boolean
+    --- @param ...R... result
+    function Task:_finalize(stat, ...)
+      -- Only run self._finalize0() directly if there are children, otherwise
       -- this will cause infinite recursion:
       --   M.run() -> task:_resume() -> resume_co() -> complete_task() -> M.run()
-      if has_children then
+      if next(self._children) ~= nil then
         -- TODO(lewis6991): should this be detached?
-        M.run({ _internal = true, name = 'await_children' }, complete0, ...)
+        M.run({ _internal = true, name = 'await_children' }, self._finalize0, self, stat, ...)
       else
-        --- @diagnostic disable-next-line: await-in-sync
-        complete0(...)
+        self:_finalize0(stat, ...)
       end
     end
 
@@ -668,9 +666,6 @@ do --- Task
     --- @package
     --- @param ... any the first argument is the error, except for when the coroutine begins
     function Task:_resume(...)
-      if self._is_completing and select(1, ...) == 'closed' then
-        return
-      end
       --- @type {[integer]: any, n: integer}?
       local args = pack_len(...)
 
@@ -679,6 +674,9 @@ do --- Task
       while args do
         -- TODO(lewis6991): Add a test that handles awaiting in the non-deferred
         -- continuation
+        if self._is_completing and select(1, ...) == 'closed' then
+          return
+        end
 
         -- handling awaiting
         local awaiting = self._awaiting
@@ -704,12 +702,12 @@ do --- Task
           -- Can only happen if coroutine.resume() is called outside of this
           -- function. When that happens check_yield() will error the coroutine
           -- which puts it in the 'dead' state.
-          complete_task(self, false, (...))
+          self:_finalize(false, (...))
           return
         end
 
         local awaitable = handle_co_resume(self._thread, function(stat, ...)
-          complete_task(self, stat, ...)
+          self:_finalize(stat, ...)
         end, coroutine.resume(self._thread, resume_marker, unpack_len(args)))
 
         if not awaitable then
@@ -885,6 +883,7 @@ do --- M.await()
       fn = norm_cb_fun(1, arg1)
     elseif getmetatable(arg1) == Task then
       fn = function(callback)
+        --- @cast arg1 vim.async.Task<R>
         arg1:wait(callback)
         return arg1
       end
@@ -985,7 +984,7 @@ do --- M.iter(), M.await_all(), M.await_any()
         local err = r[1]
         if err then
           -- -- Note: if the task was a child, then an error should have already been
-          -- -- raised in complete_task(). This should only trigger to detached tasks.
+          -- -- raised in _complete_task(). This should only trigger to detached tasks.
           -- assert(assert(tasks[r[2]])._parent == nil)
           error(('iter error[index:%d]: %s'):format(r[2], r[1]), 3)
         end
