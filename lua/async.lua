@@ -500,7 +500,7 @@ do --- Task
   ---
   --- @param callback? fun()
   function Task:close(callback)
-    if not self:completed() and not self._closing then
+    if not self:completed() and not self._closing and not self._is_completing then
       self._closing = true
       self:_raise('closed')
     end
@@ -527,11 +527,10 @@ do --- Task
   ---
   --- @param ... any The values to complete the task with.
   function Task:complete(...)
-    if self:completed() or self._closing then
+    if self:completed() or self._closing or self._is_completing then
       error('Task is already completing or completed', 2)
     end
     self._is_completing = true
-    self._closing = true
     self:_raise({ complete_marker, pack_len(...) })
   end
 
