@@ -267,7 +267,7 @@ stack traceback:
     end)
 
     it_exec('gracefully handles when closables are prematurely closed', function()
-      local task = run(function()
+      local result = run(function()
         await(1, function(callback)
           local timer = add_handle('timer', vim.uv.new_timer())
           timer:close(callback)
@@ -275,9 +275,9 @@ stack traceback:
         end)
 
         return 'FINISH'
-      end)
+      end):wait()
 
-      check_task_err(task, 'handle .* is already closing')
+      eq('FINISH', result)
     end)
 
     it_exec('callback function can be closed (nested)', function()

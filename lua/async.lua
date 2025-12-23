@@ -262,6 +262,7 @@ end
 
 --- @class vim.async.Closable
 --- @field close fun(self, callback?: fun())
+--- @field is_closing? fun(self): boolean
 
 --- Tasks are used to run coroutines in event loops. If a coroutine needs to
 --- wait on the event loop, the Task suspends the execution of the coroutine and
@@ -663,6 +664,47 @@ do --- Task
       return false
     end
 
+    --- Handle closing an awaitable if needed
+    --- @param task vim.async.Task
+    --- @param awaiting vim.async.Closable?
+    --- @param on_continue fun()
+    --- @return boolean should_return
+    --- @return {[integer]: any, n: integer}? new_args
+    local function handle_close_awaiting(task, awaiting, on_continue)
+      if not awaiting or not can_close_awaiting(task, awaiting) then
+        return false, nil
+      end
+
+      -- Check if the awaitable is already closing (if it has an is_closing method)
+      local already_closing = false
+      if type(awaiting.is_closing) == 'function' then
+        already_closing = awaiting:is_closing()
+      end
+
+      if already_closing then
+        -- Already closing, just continue without calling close
+        task._awaiting = nil
+        on_continue()
+        return true, nil
+      end
+
+      -- We must close the closable child before we resume to ensure
+      -- all resources are collected.
+      --- @diagnostic disable-next-line: param-type-not-match
+      local close_ok, close_err = pcall(awaiting.close, awaiting, function()
+        task._awaiting = nil
+        on_continue()
+      end)
+
+      if close_ok then
+        -- will call on_continue in close callback
+        return true, nil
+      end
+
+      -- Close failed (synchronously) raise error
+      return false, pack_len(close_err)
+    end
+
     --- @package
     --- @param ... any the first argument is the error, except for when the coroutine begins
     function Task:_resume(...)
@@ -678,26 +720,16 @@ do --- Task
           return
         end
 
-        -- handling awaiting
-        local awaiting = self._awaiting
-        if awaiting and can_close_awaiting(self, awaiting) then
-          -- We must close the closable child before we resume to ensure
-          -- all resources are collected.
-          --- @diagnostic disable-next-line: param-type-not-match
-          local close_ok, close_err = pcall(awaiting.close, awaiting, function()
-            self._awaiting = nil
-            self:_resume(unpack_len(args))
-          end)
-
-          if close_ok then
-            -- _resume will continue in close callback
-            return
-          end
-
-          -- Close failed (synchronously) raise error
-          args = pack_len(close_err)
+        local should_return, close_err_args = handle_close_awaiting(self, self._awaiting, function()
+          self:_resume(unpack_len(args))
+        end)
+        if should_return then
+          return
         end
 
+        args = close_err_args or args
+
+        -- Check the coroutine is still alive before trying to resume it
         if coroutine.status(self._thread) == 'dead' then
           -- Can only happen if coroutine.resume() is called outside of this
           -- function. When that happens check_yield() will error the coroutine
