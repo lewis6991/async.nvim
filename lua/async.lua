@@ -912,7 +912,7 @@ function M.is_closing()
   return task and task._closing or false
 end
 
---- Creates an async function with a callback style function.
+--- Creates an async function from a callback style function.
 ---
 --- `func` can optionally return an object with a close method to clean up
 --- resources. Note this method will be called when the task finishes or

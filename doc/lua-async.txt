@@ -208,7 +208,7 @@ automates the lifetime, cancellation, and error management that must be
 handled explicitly in Go.
 
 ------------------------------------------------------------------------------
-vim.async.run({...})                                         *vim.async.run()*
+vim.async.run({func}, {...})                                 *vim.async.run()*
 
     Run a function in an async context, asynchronously.
 
@@ -230,12 +230,12 @@ vim.async.run({...})                                         *vim.async.run()*
     - `T`, `R`
 
     Overloads: ~
-    - `fun(func: async fun(...: T ...), ...: T ...) -> Task<R ...>`
     - `fun(name: string, func: async fun(...: T ...), ...: T ...) -> Task<R ...>`
     - `fun(opts: vim.async.run.Opts, func: async fun(...: T ...), ...: T ...) -> Task<R ...>`
 
     Parameters: ~
-    - {...} (`any`)
+    - {func} (`async fun(...: T ...) -> R ...`)
+    - {...} (`???`)
 
     Returns: ~
     - (`Task<R ...>`)
@@ -302,7 +302,7 @@ vim.async.is_closing()                                *vim.async.is_closing()*
 ------------------------------------------------------------------------------
 vim.async.wrap({argc}, {func})                              *vim.async.wrap()*
 
-    Creates an async function with a callback style function.
+    Creates an async function from a callback style function.
 
     `func` can optionally return an object with a close method to clean up
     resources. Note this method will be called when the task finishes or

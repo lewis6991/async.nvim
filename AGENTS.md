@@ -4,4 +4,4 @@ Tests is defined in `./test/async_spec.lua`
 
 Run tests with `make test`
 
-Run `make format` after making any code changes.
+Run `make format` and `make doc` after making any code changes.
