@@ -541,7 +541,7 @@ do --- Task
   --- @return_cast obj vim.async.Closable
   local function is_closable(obj)
     local ty = type(obj)
-    return (ty == 'table' or ty == 'userdata') and vim.is_callable(obj.close)
+    return (ty == 'table' or ty == 'userdata') and is_callable(obj.close)
   end
 
   do -- Task:_resume()
@@ -844,7 +844,7 @@ do --- M.run
       return run({ name = func }, ...)
     elseif type(func) == 'table' then
       return run(func, ...)
-    elseif vim.is_callable(func) then
+    elseif is_callable(func) then
       return run(nil, func, ...)
     end
     error('Invalid arguments')
