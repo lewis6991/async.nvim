@@ -944,6 +944,91 @@ function M.is_closing()
   return task and task._closing or false
 end
 
+--- Protected call for async functions that propagates child task errors.
+---
+--- Similar to Lua's built-in `pcall`, but with special handling for child task
+--- errors. This function will:
+--- - Catch regular errors (return `false, err`)
+--- - Propagate child task errors (re-throw them)
+--- - Propagate cancellation errors (re-throw them)
+---
+--- This is useful when you want to handle regular errors locally, but allow
+--- child task failures to bubble up to the parent task, maintaining the
+--- structured concurrency guarantees.
+---
+--- Note: This function uses `xpcall` with a custom error handler to capture the
+--- full stack trace before the stack is unwound. When re-throwing child errors
+--- or cancellation errors, the traceback is preserved. Regular errors are
+--- caught and returned with their error messages as usual.
+---
+--- Example:
+--- ```lua
+--- vim.async.run(function()
+---   local child = vim.async.run(function()
+---     vim.async.sleep(10)
+---     error('CHILD_FAILED')
+---   end)
+---
+---   -- Regular pcall would catch the child error
+---   local ok1, err1 = pcall(function()
+---     vim.async.sleep(100)
+---   end)
+---   -- ok1 = false, err1 = 'child error: CHILD_FAILED'
+---
+---   -- async.pcall propagates child errors
+---   local ok2, err2 = vim.async.pcall(function()
+---     error('REGULAR_ERROR')
+---   end)
+---   -- ok2 = false, err2 = 'REGULAR_ERROR'
+---
+---   -- But child errors propagate:
+---   vim.async.pcall(function()
+---     vim.async.sleep(100)
+---   end)
+---   -- This will error with 'child error: CHILD_FAILED'
+--- end)
+--- ```
+---
+--- @async
+--- @generic T
+--- @param fn async fun(): T...
+--- @return boolean ok
+--- @return any|T... err_or_result
+function M.pcall(fn)
+  vim.validate('fn', fn, 'callable')
+
+  local captured_traceback
+  local results = pack_len(xpcall(fn, function(err)
+    -- Error handler runs before stack is unwound
+    -- Capture the full traceback here
+    captured_traceback = debug.traceback(err, 2)
+
+    -- Check if this is a child error or cancellation
+    if type(err) == 'string' then
+      if err:match('^child error: ') or err == 'closed' then
+        -- For child errors/cancellations, return the traceback so it can be re-thrown
+        return captured_traceback
+      end
+    end
+
+    -- For regular errors, just return the error message
+    return err
+  end))
+
+  local ok = results[1]
+
+  if not ok then
+    local err = results[2]
+    -- If this is a child error or cancellation, re-throw with the full traceback
+    if err == captured_traceback then
+      -- This is a child error or cancellation - re-throw it
+      error(err, 0)
+    end
+  end
+
+  return unpack_len(results)
+end
+
 --- Creates an async function from a callback style function.
 ---
 --- `func` can optionally return an object with a close method to clean up

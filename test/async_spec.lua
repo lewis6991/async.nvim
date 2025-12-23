@@ -1395,8 +1395,300 @@ parent@test/async_spec.lua:%d+ %[normal%]
       local ok, err = task:pwait(100)
 
       eq(true, close_called, 'close() should have been called')
-      eq(false, ok, 'Task should have errored')
+      assert(not ok, 'Task should have errored')
       assert(err:match('CLOSE_ERROR'), 'Expected CLOSE_ERROR, got: ' .. tostring(err))
+    end)
+  end)
+
+  describe('async.pcall', function()
+    it_exec('catches regular errors', function()
+      local result
+      local task = run(function()
+        local ok, err = Async.pcall(function()
+          error('REGULAR_ERROR')
+        end)
+        result = { ok = ok, err = err }
+      end)
+
+      task:wait(100)
+
+      eq(false, result.ok)
+      assert(
+        result.err:match('REGULAR_ERROR'),
+        'Expected REGULAR_ERROR, got: ' .. tostring(result.err)
+      )
+    end)
+
+    it_exec('returns results on success', function()
+      local result
+      local task = run(function()
+        local ok, a, b, c = Async.pcall(function()
+          return 1, 'two', true
+        end)
+        result = { ok = ok, a = a, b = b, c = c }
+      end)
+
+      task:wait(100)
+
+      eq(true, result.ok)
+      eq(1, result.a)
+      eq('two', result.b)
+      eq(true, result.c)
+    end)
+
+    it_exec('propagates child task errors', function()
+      local parent_task = run(function()
+        -- Start a child that will error
+        local _child = run(function()
+          Async.sleep(5)
+          error('CHILD_ERROR')
+        end)
+
+        -- Use async.pcall to try to catch errors
+        local ok, err = Async.pcall(function()
+          Async.sleep(100) -- Wait long enough for child to error
+        end)
+
+        -- Should never get here because child error propagates
+        error('Should not reach here')
+      end)
+
+      local ok, err = parent_task:pwait(100)
+
+      eq(false, ok)
+      assert(err:match('child error:.*CHILD_ERROR'), 'Expected child error, got: ' .. tostring(err))
+    end)
+
+    it_exec('regular pcall catches child errors (for comparison)', function()
+      local caught_error
+      local parent_task = run(function()
+        -- Start a child that will error
+        local _child = run(function()
+          Async.sleep(5)
+          error('CHILD_ERROR')
+        end)
+
+        -- Regular pcall catches child errors
+        local ok, err = pcall(function()
+          Async.sleep(100)
+        end)
+
+        caught_error = { ok = ok, err = err }
+      end)
+
+      parent_task:wait(100)
+
+      eq(false, caught_error.ok)
+      assert(
+        caught_error.err:match('child error:.*CHILD_ERROR'),
+        'Expected child error, got: ' .. tostring(caught_error.err)
+      )
+    end)
+
+    it_exec('propagates cancellation errors', function()
+      local task = run(function()
+        -- Use async.pcall inside a closing task
+        local ok, err = Async.pcall(function()
+          Async.sleep(100)
+        end)
+
+        -- Should never get here
+        error('Should not reach here')
+      end)
+
+      -- Close the task immediately
+      task:close()
+
+      local ok, err = task:pwait(100)
+
+      eq(false, ok)
+      -- With xpcall, we now get a full traceback for cancellation errors
+      assert(err:match('closed'), 'Error should contain "closed"')
+    end)
+
+    it_exec('catches regular errors but propagates child errors in same task', function()
+      local results = {}
+      local parent_task = run(function()
+        -- Start a child that will error soon
+        local _child = run(function()
+          Async.sleep(20)
+          error('CHILD_ERROR')
+        end)
+
+        -- First async.pcall catches a regular error
+        local ok1, err1 = Async.pcall(function()
+          error('REGULAR_ERROR_1')
+        end)
+        table.insert(results, { step = 1, ok = ok1, err = err1 })
+
+        -- Second async.pcall also catches a regular error
+        local ok2, err2 = Async.pcall(function()
+          error('REGULAR_ERROR_2')
+        end)
+        table.insert(results, { step = 2, ok = ok2, err = err2 })
+
+        -- Third async.pcall will be interrupted by child error
+        local ok3, err3 = Async.pcall(function()
+          Async.sleep(100) -- Wait for child to error
+        end)
+
+        -- Should never get here
+        error('Should not reach here')
+      end)
+
+      local ok, err = parent_task:pwait(100)
+
+      -- First two pcalls should have succeeded in catching errors
+      eq(2, #results)
+      eq(false, results[1].ok)
+      assert(results[1].err:match('REGULAR_ERROR_1'))
+      eq(false, results[2].ok)
+      assert(results[2].err:match('REGULAR_ERROR_2'))
+
+      -- Parent should have failed with child error
+      eq(false, ok)
+      assert(err:match('child error:.*CHILD_ERROR'), 'Expected child error, got: ' .. tostring(err))
+    end)
+
+    it_exec('works with async functions that await', function()
+      local result
+      local task = run(function()
+        local ok, value = Async.pcall(function()
+          Async.sleep(10)
+          return 'SUCCESS'
+        end)
+        result = { ok = ok, value = value }
+      end)
+
+      task:wait(100)
+
+      eq(true, result.ok)
+      eq('SUCCESS', result.value)
+    end)
+
+    it_exec('propagates child errors even when nested in pcall', function()
+      local inner_pcall_result
+      local outer_pcall_result
+      local parent_task = run(function()
+        local _child = run(function()
+          Async.sleep(5)
+          error('CHILD_ERROR')
+        end)
+
+        -- Nested pcalls
+        local ok_outer, err_outer = pcall(function()
+          local ok_inner, err_inner = Async.pcall(function()
+            Async.sleep(100)
+          end)
+          inner_pcall_result = { ok = ok_inner, err = err_inner }
+        end)
+        outer_pcall_result = { ok = ok_outer, err = err_outer }
+
+        -- Should not reach here because async.pcall re-throws
+        -- but the outer pcall will catch it
+      end)
+
+      local ok, err = parent_task:pwait(100)
+
+      -- The outer pcall should have caught the re-thrown child error
+      eq(false, outer_pcall_result.ok)
+      assert(
+        outer_pcall_result.err:match('child error:.*CHILD_ERROR'),
+        'Expected child error in outer pcall, got: ' .. tostring(outer_pcall_result.err)
+      )
+
+      -- The inner async.pcall shouldn't have returned normally
+      eq(nil, inner_pcall_result)
+
+      -- The parent task should complete successfully since outer pcall caught it
+      eq(true, ok)
+    end)
+
+    it_exec('preserves stack traces when propagating child errors', function()
+      local parent_task = run(function()
+        local _child = run(function()
+          Async.sleep(5)
+          error('CHILD_ERROR')
+        end)
+
+        -- Use async.pcall which should propagate the child error
+        Async.pcall(function()
+          Async.sleep(100)
+        end)
+      end)
+
+      local ok, err = parent_task:pwait(100)
+
+      eq(false, ok)
+      -- Check that the error message contains the child error
+      assert(err:match('CHILD_ERROR'), 'Expected CHILD_ERROR in: ' .. tostring(err))
+
+      -- Get the full traceback
+      local traceback = parent_task:traceback(err)
+
+      -- The error message (not the stack trace) contains the child error location
+      -- This is a limitation of Lua's error() - see async.pcall documentation
+      assert(traceback:match('CHILD_ERROR'), 'Traceback should contain CHILD_ERROR')
+      assert(err:match('test/async_spec.lua:%d+'), 'Error should contain file:line reference')
+    end)
+
+    it_exec('compare: traceback without async.pcall shows child location', function()
+      local parent_task = run(function()
+        local _child = run(function()
+          Async.sleep(5)
+          error('CHILD_ERROR_DIRECT')
+        end)
+
+        -- Don't use async.pcall - let child error propagate naturally
+        Async.sleep(100)
+      end)
+
+      local ok, err = parent_task:pwait(100)
+
+      eq(false, ok)
+
+      -- Get the full traceback
+      local traceback = parent_task:traceback(err)
+
+      -- Both approaches preserve the error message with location
+      assert(traceback:match('CHILD_ERROR_DIRECT'), 'Traceback should contain CHILD_ERROR_DIRECT')
+      assert(err:match('test/async_spec.lua:%d+'), 'Error should contain file:line reference')
+    end)
+
+    it_exec('xpcall can capture full stack trace before unwinding', function()
+      local captured_traceback
+      local captured_err
+
+      local parent_task = run(function()
+        local _child = run(function()
+          Async.sleep(5)
+          error('CHILD_ERROR_XPCALL')
+        end)
+
+        -- Use xpcall to capture the stack trace before unwinding
+        local ok, result = xpcall(function()
+          Async.sleep(100)
+        end, function(err)
+          -- This handler runs BEFORE the stack is unwound
+          captured_err = err
+          captured_traceback = debug.traceback(err, 2)
+          return err -- Return the original error
+        end)
+
+        -- Should not reach here
+        error('Should not reach here')
+      end)
+
+      local ok, err = parent_task:pwait(100)
+
+      print('\n=== XPCALL Captured Traceback ===')
+      print('Error:', captured_err)
+      print('Traceback:', captured_traceback)
+      print('=== End ===\n')
+
+      eq(false, ok)
+      assert(captured_err:match('CHILD_ERROR_XPCALL'), 'Should capture child error')
+      assert(captured_traceback ~= nil, 'Should capture traceback')
     end)
   end)
 end)

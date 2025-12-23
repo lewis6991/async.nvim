@@ -317,8 +317,8 @@ vim.async.run(function()
 
   local ok, result = pcall(function()
     -- Parent suspends, event loop runs child
-    -- If child errors, sleep is cancelled and parent resumes with error
-    vim.async.sleep(1)
+    -- If child errors, the await is cancelled and parent resumes with error
+    local data = read_file()
   end)
 
   if not ok then
@@ -427,6 +427,97 @@ end
 
 The library includes special handling for tracebacks across task boundaries.
 When you have nested async operations, `task:traceback()` will show you the call stack across all the coroutines involved, making debugging much easier.
+
+### Handling Errors While Maintaining Structured Concurrency
+
+Standard `pcall` has a problem in async code: it catches everything, including child task errors and cancellations.
+This breaks structured concurrency guarantees:
+
+```lua
+vim.async.run(function()
+  local child = vim.async.run(function()
+    local result = fetch_data()  -- Async operation that fails
+    error("child failed: " .. result.error)
+  end)
+
+  -- Standard pcall catches the child error
+  local ok, err = pcall(function()
+    -- When awaiting, child error is delivered here
+    local data = read_file()
+  end)
+
+  if not ok then
+    print("Caught:", err)
+    -- Child error was consumed - structured concurrency violated!
+    -- Parent continues even though a child failed
+  end
+
+  process_data()  -- This succeeds, but child is dead
+end)
+```
+
+To handle local errors while preserving structured concurrency, use `vim.async.pcall()`:
+
+```lua
+vim.async.run(function()
+  local child = vim.async.run(function()
+    local result = fetch_data()  -- Async operation that fails
+    error("child failed: " .. result.error)
+  end)
+
+  -- async.pcall catches regular errors but propagates child errors
+  local ok, err = vim.async.pcall(function()
+    -- This regular error is caught
+    local data = read_file()
+    return data
+  end)
+
+  if not ok then
+    print("Caught regular error:", err)
+    -- Can recover from parse error
+  end
+
+  process_data()  -- Child error delivered here and propagates
+  -- This line never executes - child error propagates to parent
+end)
+```
+
+`vim.async.pcall()` distinguishes between three types of errors:
+
+1. **Regular errors** - Caught and returned as `(false, err)`
+2. **Child errors** - Propagated by re-throwing (maintains structured concurrency)
+3. **Cancellation errors** - Propagated by re-throwing (maintains level-triggered cancellation)
+
+
+This makes `async.pcall` ideal for error recovery while maintaining the safety guarantees of structured concurrency:
+
+```lua
+vim.async.run(function()
+  -- Launch background workers that process data
+  for i = 1, 5 do
+    vim.async.run(function()
+      -- These might fail - errors should propagate
+      local data = fetch_batch(i)
+      process_batch(data)
+    end)
+  end
+
+  -- Handle local errors without catching worker failures
+  local ok, config = vim.async.pcall(function()
+    return load_config()  -- Might fail due to bad JSON, missing file, etc.
+  end)
+
+  if not ok then
+    config = get_default_config()  -- Recover from config error
+  end
+
+  -- If any worker errors, we'll still get that error here
+  -- when we await any operation
+  setup_with_config(config)
+
+  -- Parent waits for all workers to complete
+end)
+```
 
 ## Cancellation
 

@@ -300,6 +300,67 @@ vim.async.is_closing()                                *vim.async.is_closing()*
     - (`boolean`)
 
 ------------------------------------------------------------------------------
+vim.async.pcall({fn})                                      *vim.async.pcall()*
+
+    Protected call for async functions that propagates child task errors.
+
+    Similar to Lua's built-in `pcall`, but with special handling for child task
+    errors. This function will:
+    - Catch regular errors (return `false, err`)
+    - Propagate child task errors (re-throw them)
+    - Propagate cancellation errors (re-throw them)
+
+    This is useful when you want to handle regular errors locally, but allow
+    child task failures to bubble up to the parent task, maintaining the
+    structured concurrency guarantees.
+
+    Note: This function uses `xpcall` with a custom error handler to capture the
+    full stack trace before the stack is unwound. When re-throwing child errors
+    or cancellation errors, the traceback is preserved. Regular errors are
+    caught and returned with their error messages as usual.
+
+    Example:
+    >lua
+     vim.async.run(function()
+       local child = vim.async.run(function()
+         vim.async.sleep(10)
+         error('CHILD_FAILED')
+       end)
+
+       -- Regular pcall would catch the child error
+       local ok1, err1 = pcall(function()
+         vim.async.sleep(100)
+       end)
+       -- ok1 = false, err1 = 'child error: CHILD_FAILED'
+
+       -- async.pcall propagates child errors
+       local ok2, err2 = vim.async.pcall(function()
+         error('REGULAR_ERROR')
+       end)
+       -- ok2 = false, err2 = 'REGULAR_ERROR'
+
+       -- But child errors propagate:
+       vim.async.pcall(function()
+         vim.async.sleep(100)
+       end)
+       -- This will error with 'child error: CHILD_FAILED'
+     end)
+<
+
+    Attributes: ~
+    - `async`
+
+    Generics: ~
+    - `T`
+
+    Parameters: ~
+    - {fn} (`async fun() -> T ...`)
+
+    Returns: ~
+    - {ok} (`boolean`)
+    - {err_or_result} (`(any|T ...)`)
+
+------------------------------------------------------------------------------
 vim.async.wrap({argc}, {func})                              *vim.async.wrap()*
 
     Creates an async function from a callback style function.
