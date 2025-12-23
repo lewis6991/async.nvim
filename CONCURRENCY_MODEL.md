@@ -327,16 +327,14 @@ vim.async.run(function()
 end)
 ```
 
-### Level-Triggered Errors
+### Edge-Triggered Errors, Level-Triggered Cancellations
 
-async.nvim implements **level-triggered error propagation**.
-This term comes from hardware and signal processing, where systems can respond to conditions in two ways:
+async.nvim uses different propagation models for errors versus cancellations:
 
-- **Edge-triggered**: An event fires once when a condition transitions from false to true (e.g., OK → Error). If you miss the event, it's gone.
-- **Level-triggered**: An event fires continuously as long as the condition remains true. The condition is checked repeatedly.
+- **Edge-triggered (errors)**: An event fires once when a condition transitions from false to true (e.g., OK → Error). Once delivered, the error is consumed.
+- **Level-triggered (cancellations)**: The condition persists and is checked repeatedly at each suspension point.
 
-In async.nvim, when a child task fails, the error condition persists until the child is no longer in scope or explicitly handled. [FIXME: not true. currently the implementation
-If a parent catches an error with `pcall` but continues execution and hits another `await`, the error will be re-issued because the child's failed state still exists:
+**Normal errors are edge-triggered.** When a child task fails, the error is delivered once to the parent at the next suspension point. After catching the error with `pcall`, you can continue execution normally:
 
 ```lua
 vim.async.run(function()
@@ -351,87 +349,68 @@ vim.async.run(function()
   end)
   
   if not ok then
-    print("Caught first error:", err)
-    -- Error was caught, but child is still in error state
+    print("Caught error:", err)
+    -- Error has been consumed, can continue safely
   end
   
-  -- Second await - error is re-issued!
-  vim.async.sleep(1)  -- Error thrown again because child still failed
+  -- Second await - no error re-issued
+  vim.async.sleep(1)  -- This works fine
+  print("Continued after handling error")
 end)
 ```
 
-To properly handle errors without re-issuing, you have several options:
-
-**Option 1: Wrap the entire scope containing the child**
+**Cancellations are level-triggered.** When a task is being closed, the cancellation condition persists. If you catch a "closed" error with `pcall` but continue execution, subsequent suspension points will continue to receive the "closed" error:
 
 ```lua
 vim.async.run(function()
-  local ok, result = pcall(function()
-    local child = vim.async.run(risky_operation)
+  local task = vim.async.run(function()
+    local ok, err = pcall(function()
+      vim.async.sleep(100)
+    end)
     
-    -- Do work that may await multiple times
-    vim.async.sleep(100)
-    process_data()
-    vim.async.sleep(200)
+    if not ok and err == "closed" then
+      print("Caught first cancellation")
+      -- Cancellation state persists
+    end
     
-    -- Child goes out of scope when pcall completes
-    return get_result()
+    -- Second await - cancellation re-issued!
+    vim.async.sleep(1)  -- Throws "closed" again
   end)
   
-  if not ok then
-    print("Child failed:", result)
-    -- Child is no longer in scope, safe to continue
-  end
-  
-  vim.async.sleep(50)  -- No error re-issued here
+  task:close()
 end)
 ```
 
-**Option 2: Use `pwait()` directly on the child task**
+This design makes sense because:
+
+1. **Errors represent transient events** - once a child has failed and you've handled that failure, you may want to continue with error recovery or cleanup logic.
+
+2. **Cancellations represent persistent state** - if a task is being shut down, it should stay shut down. The cancellation request doesn't go away just because you caught it once.
+
+To handle cancellations gracefully, check the cancellation state explicitly:
 
 ```lua
 vim.async.run(function()
-  local child = vim.async.run(risky_operation)
-  
-  vim.async.sleep(50)  -- Do some work while child runs
-  
-  -- Explicitly wait for child and get its status
-  local ok, result = child:pwait(1000)
-  
-  if not ok then
-    print("Child failed:", result)
-    -- Child has been awaited, error is resolved
+  while not vim.async.is_closing() do
+    local ok, err = pcall(function()
+      do_work()
+      vim.async.sleep(10)
+    end)
+    
+    if not ok then
+      if err == "closed" then
+        break  -- Exit the loop on cancellation
+      else
+        print("Error occurred:", err)
+        -- Handle other errors and continue
+      end
+    end
   end
   
-  vim.async.sleep(100)  -- No error re-issued here
+  cleanup()
+  print("Shut down gracefully")
 end)
 ```
-
-**Option 3: Handle the error and return or re-throw**
-
-```lua
-vim.async.run(function()
-  local child = vim.async.run(risky_operation)
-  
-  local ok, err = pcall(function()
-    vim.async.sleep(100)
-  end)
-  
-  if not ok then
-    print("Child failed:", err)
-    -- Don't continue in this function - handle and return
-    return nil, err
-  end
-  
-  -- Only reached if no error occurred
-  vim.async.sleep(50)
-end)
-```
-
-This level-triggered design prevents accidentally ignoring errors.
-You cannot simply catch an error once with `pcall` and continue as if nothing happened—the failed child's state persists.
-This aligns with structured concurrency's guarantee that errors don't get lost: every suspension point checks for child errors and ensures they're handled.
-The error remains active until the failed child is no longer part of the parent's scope or has been explicitly awaited to completion.
 
 Tasks also provide a `pwait()` method that returns a status and result instead of throwing:
 

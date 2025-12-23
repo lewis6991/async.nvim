@@ -1,3 +1,4 @@
+--- @diagnostic disable: global-in-non-module
 local helpers = require('nvim-test.helpers')
 local exec_lua = helpers.exec_lua
 
@@ -838,7 +839,7 @@ parent@test/async_spec.lua:%d+ %[normal%]
   end)
 
   it_exec('can complete tasks with children', function()
-    local child
+    local child --- @type vim.async.Task
     local task = run(function()
       child = run(eternity)
       await(child)
@@ -851,8 +852,8 @@ parent@test/async_spec.lua:%d+ %[normal%]
   end)
 
   it_exec('handles race condition of children completing parent', function()
-    local parent_task
-    local child2_task
+    local parent_task --- @type vim.async.Task
+    local child2_task --- @type vim.async.Task
     parent_task = run(function()
       run(function()
         Async.sleep(10)
@@ -873,7 +874,7 @@ parent@test/async_spec.lua:%d+ %[normal%]
 
   it_exec('handles simultaneous calls to :complete() from scheduler', function()
     local task = run(eternity)
-    local second_complete_error
+    local second_complete_error --- @type string?
 
     vim.schedule(function()
       task:complete('first call')
@@ -897,6 +898,313 @@ parent@test/async_spec.lua:%d+ %[normal%]
         '^test/async_spec.lua:%d+: Task is already completing or completed$'
       ),
       'Unexpected error message: ' .. second_complete_error
+    )
+  end)
+
+  describe('edge-triggered errors and level-triggered cancellations', function()
+    it_exec('normal errors are edge-triggered (consumed after first catch)', function()
+      local results = {}
+      local parent = run(function()
+        local _child = run(function()
+          Async.sleep(5)
+          error('CHILD ERROR')
+        end)
+
+        -- First await - error is caught
+        local ok1, err1 = pcall(function()
+          Async.sleep(100) -- Child error delivered here
+        end)
+
+        if not ok1 then
+          results[#results + 1] = 'caught_first'
+          results[#results + 1] = err1:match('CHILD ERROR') and 'has_error' or 'no_error'
+        end
+
+        -- Second await - error should NOT be re-issued (edge-triggered)
+        local ok2, err2 = pcall(function()
+          Async.sleep(1)
+        end)
+
+        if not ok2 then
+          results[#results + 1] = 'caught_second'
+          results[#results + 1] = tostring(err2)
+        else
+          results[#results + 1] = 'no_second_error'
+        end
+
+        -- Third await - should also work fine
+        Async.sleep(1)
+        results[#results + 1] = 'completed_normally'
+      end)
+
+      parent:wait(200)
+
+      eq({
+        'caught_first',
+        'has_error',
+        'no_second_error',
+        'completed_normally',
+      }, results)
+    end)
+
+    it_exec('cancellations are level-triggered (persist across catches)', function()
+      local results = {}
+      local task = run(function()
+        -- First await - cancellation is caught
+        local ok1, err1 = pcall(function()
+          Async.sleep(100)
+        end)
+
+        if not ok1 then
+          results[#results + 1] = 'caught_first'
+          results[#results + 1] = err1 == 'closed' and 'is_closed' or 'other_error'
+        end
+
+        -- Second await - cancellation should be re-issued (level-triggered)
+        local ok2, err2 = pcall(function()
+          Async.sleep(1)
+        end)
+
+        if not ok2 then
+          results[#results + 1] = 'caught_second'
+          results[#results + 1] = err2 == 'closed' and 'is_closed' or 'other_error'
+        end
+
+        results[#results + 1] = 'should_not_reach'
+      end)
+
+      run(function()
+        Async.sleep(1)
+        task:close()
+      end):wait()
+
+      check_task_err(task, 'closed')
+
+      eq({
+        'caught_first',
+        'is_closed',
+        'caught_second',
+        'is_closed',
+        'should_not_reach', -- Synchronous code continues until completion/next suspension
+      }, results)
+    end)
+
+    it_exec('can handle error and continue with recovery logic', function()
+      local results = {}
+      run(function()
+        local _child = run(function()
+          Async.sleep(5)
+          error('SERVICE UNAVAILABLE')
+        end)
+
+        local ok = pcall(function()
+          Async.sleep(100)
+        end)
+
+        if not ok then
+          results[#results + 1] = 'error_caught'
+          -- Perform recovery/fallback logic
+          Async.sleep(1)
+          results[#results + 1] = 'recovery_step_1'
+          Async.sleep(1)
+          results[#results + 1] = 'recovery_step_2'
+        end
+
+        results[#results + 1] = 'finished'
+      end):wait(200)
+
+      eq({
+        'error_caught',
+        'recovery_step_1',
+        'recovery_step_2',
+        'finished',
+      }, results)
+    end)
+
+    it_exec('cancellation persists even after pcall catches it', function()
+      local results = {}
+      local task = run(function()
+        for i = 1, 5 do
+          local ok, err = pcall(function()
+            Async.sleep(10)
+          end)
+
+          if not ok then
+            if err == 'closed' then
+              results[#results + 1] = ('closed_iteration_%d'):format(i)
+            else
+              results[#results + 1] = ('error_iteration_%d'):format(i)
+            end
+          else
+            results[#results + 1] = ('success_iteration_%d'):format(i)
+          end
+        end
+      end)
+
+      run(function()
+        Async.sleep(1)
+        task:close()
+      end):wait()
+
+      check_task_err(task, 'closed')
+
+      -- All iterations should get "closed" because cancellation is level-triggered
+      eq({
+        'closed_iteration_1',
+        'closed_iteration_2',
+        'closed_iteration_3',
+        'closed_iteration_4',
+        'closed_iteration_5',
+      }, results)
+    end)
+
+    it_exec('is_closing() reflects level-triggered cancellation state', function()
+      local results = {}
+      local task = run(function()
+        for _ = 1, 3 do
+          results[#results + 1] = ('is_closing_%d'):format(Async.is_closing() and 1 or 0)
+
+          local ok = pcall(function()
+            Async.sleep(10)
+          end)
+
+          if not ok then
+            results[#results + 1] = ('after_catch_is_closing_%d'):format(
+              Async.is_closing() and 1 or 0
+            )
+          end
+        end
+      end)
+
+      run(function()
+        Async.sleep(1)
+        task:close()
+      end):wait()
+
+      check_task_err(task, 'closed')
+
+      eq({
+        'is_closing_0', -- Not closing initially
+        'after_catch_is_closing_1', -- Closing after first catch
+        'is_closing_1', -- Still closing
+        'after_catch_is_closing_1', -- Still closing
+        'is_closing_1', -- Still closing
+        'after_catch_is_closing_1', -- Still closing
+      }, results)
+    end)
+
+    it_exec('multiple child errors - each new error propagates', function()
+      local results = {}
+      local parent = run(function()
+        local _child1 = run(function()
+          Async.sleep(5)
+          error('ERROR_1')
+        end)
+
+        local _child2 = run(function()
+          Async.sleep(10)
+          error('ERROR_2')
+        end)
+
+        -- First error from child1 at 5ms
+        local ok1, err1 = pcall(function()
+          Async.sleep(100)
+        end)
+
+        if not ok1 then
+          results[#results + 1] = err1:match('ERROR_1') and 'got_error_1' or 'other'
+        end
+
+        -- Second error from child2 at 10ms (new error, should propagate)
+        local ok2, err2 = pcall(function()
+          Async.sleep(100)
+        end)
+
+        if not ok2 then
+          results[#results + 1] = err2:match('ERROR_2') and 'got_error_2' or 'other'
+        end
+
+        results[#results + 1] = 'both_errors_handled'
+      end)
+
+      parent:wait(200)
+
+      eq({
+        'got_error_1',
+        'got_error_2',
+        'both_errors_handled',
+      }, results)
+    end)
+
+    it_exec('task error takes precedence over cancellation when both occur', function()
+      -- Test the edge case: task errors naturally while _closing flag is set
+      -- Expected: original error should be preserved, not replaced with "closed"
+
+      local task = run(function()
+        -- Catch the cancellation to continue execution
+        pcall(function()
+          Async.sleep(10)
+        end)
+
+        -- At this point, _closing is true but we caught it
+        -- Now error naturally - this error should be preserved
+        error('TASK_ERROR')
+      end)
+
+      -- Close the task while it's sleeping
+      run(function()
+        Async.sleep(1)
+        task:close()
+      end):wait()
+
+      -- Wait for the task to error
+      local ok, err = task:pwait(100)
+      assert(not ok, 'Expected task to error')
+
+      -- The error should be the original TASK_ERROR, not "closed"
+      -- because even though _closing is true, the task errored naturally
+      eq(true, err:match('TASK_ERROR') ~= nil, 'Expected TASK_ERROR, got: ' .. tostring(err))
+    end)
+
+    it_exec(
+      'cancellation takes precedence when task completes successfully while closing',
+      function()
+        -- Test the complementary case: task completes successfully while being closed
+        -- Expected: should get "closed" error, not success
+        local results = {}
+        local task = run(function()
+          for i = 1, 3 do
+            local ok = pcall(function()
+              Async.sleep(5)
+            end)
+            if not ok then
+              results[#results + 1] = ('iteration_%d_cancelled'):format(i)
+            else
+              results[#results + 1] = ('iteration_%d_success'):format(i)
+            end
+          end
+          results[#results + 1] = 'completed'
+          return 'SUCCESS'
+        end)
+
+        run(function()
+          Async.sleep(1)
+          task:close()
+        end):wait()
+
+        -- Should error with "closed" not complete with "SUCCESS"
+        check_task_err(task, 'closed')
+
+        -- Verify the iterations were cancelled
+        assert(#results > 0, 'Expected some iterations to run')
+        for _, result in ipairs(results) do
+          eq(
+            true,
+            result:match('cancelled') ~= nil or result == 'completed',
+            'Expected cancelled or completed, got: ' .. result
+          )
+        end
+      end
     )
   end)
 end)

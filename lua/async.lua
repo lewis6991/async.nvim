@@ -600,7 +600,7 @@ do --- Task
     --- @param stat boolean
     --- @return fun(callback: fun(...:any...): vim.async.Closable?)?
     local function handle_co_resume(thread, on_finish, stat, ...)
-      if not stat or coroutine.status(thread) == 'dead' then
+      if coroutine.status(thread) == 'dead' then
         on_finish(stat, ...)
         return
       end
@@ -706,8 +706,16 @@ do --- Task
           return
         end
 
-        local awaitable = handle_co_resume(self._thread, function(stat, ...)
-          self:_finalize(stat, ...)
+        -- Level-triggered cancellation: if the task is closing and the coroutine
+        -- completed successfully (e.g., after pcall caught the cancellation and
+        -- then did another await), override the success with "closed" error.
+        -- This ensures cancellations persist across pcall catches.
+        local awaitable = handle_co_resume(self._thread, function(stat2, ...)
+          if self._closing and stat2 then
+            self:_finalize(false, 'closed')
+          else
+            self:_finalize(stat2, ...)
+          end
         end, coroutine.resume(self._thread, resume_marker, unpack_len(args)))
 
         if not awaitable then
@@ -795,17 +803,17 @@ do --- M.run
   --- local stat = vim.fs_stat('foo.txt')
   --- ```
   --- @generic T, R
-  --- @overload fun(func: async fun(...:T...), ...: T...): vim.async.Task<R...>
+  --- @param func async fun(...:T...): R...
+  --- @return vim.async.Task<R...>
   --- @overload fun(name: string, func: async fun(...:T...), ...: T...): vim.async.Task<R...>
   --- @overload fun(opts: vim.async.run.Opts, func: async fun(...:T...), ...: T...): vim.async.Task<R...>
-  function M.run(...)
-    local arg1 = select(1, ...)
-    if type(arg1) == 'string' then
-      return run({ name = arg1 }, select(2, ...))
-    elseif vim.is_callable(arg1) then
-      return run(nil, ...)
-    elseif type(arg1) == 'table' then
-      return run(...)
+  function M.run(func, ...)
+    if type(func) == 'string' then
+      return run({ name = func }, ...)
+    elseif type(func) == 'table' then
+      return run(func, ...)
+    elseif vim.is_callable(func) then
+      return run(nil, func, ...)
     end
     error('Invalid arguments')
   end
