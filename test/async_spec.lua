@@ -1227,11 +1227,8 @@ parent@test/async_spec.lua:%d+ %[normal%]
 
     it_exec('child error during parent finalization is handled', function()
       -- Test the race condition where a child errors while parent is finalizing
-      local parent_finalized = false
-      local child_error_raised = false
-
       local parent = run(function()
-        local child = run(function()
+        local _child = run(function()
           -- Child sleeps briefly then errors
           Async.sleep(5)
           error('CHILD_ERROR')
@@ -1246,6 +1243,7 @@ parent@test/async_spec.lua:%d+ %[normal%]
 
       -- Parent should have gotten the child error
       eq(false, ok)
+      --- @cast err string
       assert(err:match('child error:.*CHILD_ERROR'), 'Expected child error, got: ' .. tostring(err))
     end)
 
@@ -1402,7 +1400,7 @@ parent@test/async_spec.lua:%d+ %[normal%]
 
   describe('async.pcall', function()
     it_exec('catches regular errors', function()
-      local result
+      local result --- @type {ok: boolean, err: any}
       local task = run(function()
         local ok, err = Async.pcall(function()
           error('REGULAR_ERROR')
@@ -1420,7 +1418,7 @@ parent@test/async_spec.lua:%d+ %[normal%]
     end)
 
     it_exec('returns results on success', function()
-      local result
+      local result --- @type {ok: boolean, a: any, b: any, c: any}
       local task = run(function()
         local ok, a, b, c = Async.pcall(function()
           return 1, 'two', true
@@ -1445,7 +1443,7 @@ parent@test/async_spec.lua:%d+ %[normal%]
         end)
 
         -- Use async.pcall to try to catch errors
-        local ok, err = Async.pcall(function()
+        Async.pcall(function()
           Async.sleep(100) -- Wait long enough for child to error
         end)
 
@@ -1460,7 +1458,7 @@ parent@test/async_spec.lua:%d+ %[normal%]
     end)
 
     it_exec('regular pcall catches child errors (for comparison)', function()
-      local caught_error
+      local caught_error --- @type {ok: boolean, err: any}
       local parent_task = run(function()
         -- Start a child that will error
         local _child = run(function()
@@ -1488,7 +1486,7 @@ parent@test/async_spec.lua:%d+ %[normal%]
     it_exec('propagates cancellation errors', function()
       local task = run(function()
         -- Use async.pcall inside a closing task
-        local ok, err = Async.pcall(function()
+        Async.pcall(function()
           Async.sleep(100)
         end)
 
@@ -1528,7 +1526,7 @@ parent@test/async_spec.lua:%d+ %[normal%]
         table.insert(results, { step = 2, ok = ok2, err = err2 })
 
         -- Third async.pcall will be interrupted by child error
-        local ok3, err3 = Async.pcall(function()
+        Async.pcall(function()
           Async.sleep(100) -- Wait for child to error
         end)
 
@@ -1551,7 +1549,7 @@ parent@test/async_spec.lua:%d+ %[normal%]
     end)
 
     it_exec('works with async functions that await', function()
-      local result
+      local result --- @type {ok: boolean, value: any}
       local task = run(function()
         local ok, value = Async.pcall(function()
           Async.sleep(10)
@@ -1567,8 +1565,8 @@ parent@test/async_spec.lua:%d+ %[normal%]
     end)
 
     it_exec('propagates child errors even when nested in pcall', function()
-      local inner_pcall_result
-      local outer_pcall_result
+      local inner_pcall_result --- @type {ok: boolean, err: any}
+      local outer_pcall_result --- @type {ok: boolean, err: any}
       local parent_task = run(function()
         local _child = run(function()
           Async.sleep(5)
@@ -1588,7 +1586,7 @@ parent@test/async_spec.lua:%d+ %[normal%]
         -- but the outer pcall will catch it
       end)
 
-      local ok, err = parent_task:pwait(100)
+      local ok = parent_task:pwait(100)
 
       -- The outer pcall should have caught the re-thrown child error
       eq(false, outer_pcall_result.ok)
@@ -1620,6 +1618,7 @@ parent@test/async_spec.lua:%d+ %[normal%]
       local ok, err = parent_task:pwait(100)
 
       eq(false, ok)
+      --- @cast err string
       -- Check that the error message contains the child error
       assert(err:match('CHILD_ERROR'), 'Expected CHILD_ERROR in: ' .. tostring(err))
 
@@ -1646,6 +1645,7 @@ parent@test/async_spec.lua:%d+ %[normal%]
       local ok, err = parent_task:pwait(100)
 
       eq(false, ok)
+      --- @cast err string
 
       -- Get the full traceback
       local traceback = parent_task:traceback(err)
@@ -1657,7 +1657,7 @@ parent@test/async_spec.lua:%d+ %[normal%]
 
     it_exec('xpcall can capture full stack trace before unwinding', function()
       local captured_traceback
-      local captured_err
+      local captured_err --- @type string
 
       local parent_task = run(function()
         local _child = run(function()
@@ -1666,7 +1666,7 @@ parent@test/async_spec.lua:%d+ %[normal%]
         end)
 
         -- Use xpcall to capture the stack trace before unwinding
-        local ok, result = xpcall(function()
+        xpcall(function()
           Async.sleep(100)
         end, function(err)
           -- This handler runs BEFORE the stack is unwound
@@ -1679,7 +1679,7 @@ parent@test/async_spec.lua:%d+ %[normal%]
         error('Should not reach here')
       end)
 
-      local ok, err = parent_task:pwait(100)
+      local ok = parent_task:pwait(100)
 
       print('\n=== XPCALL Captured Traceback ===')
       print('Error:', captured_err)
