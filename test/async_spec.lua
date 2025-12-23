@@ -1143,4 +1143,260 @@ parent@test/async_spec.lua:%d+ %[normal%]
       end
     )
   end)
+
+  describe('edge case tests', function()
+    it_exec('handles awaiting closable that is already closing', function()
+      -- Test for potential issue where is_closing() returns true
+      local close_count = 0
+      local callback_called = false
+
+      local closable = {
+        _closing = false,
+        is_closing = function(self)
+          return self._closing
+        end,
+        close = function(self, cb)
+          close_count = close_count + 1
+          self._closing = true
+          if cb then
+            vim.schedule(cb)
+          end
+        end,
+      }
+
+      local task = run(function()
+        -- Start closing the closable
+        closable:close()
+
+        -- Now try to await something that returns this already-closing closable
+        local result = await(function(callback)
+          vim.schedule(function()
+            callback('RESULT')
+          end)
+          return closable
+        end)
+
+        callback_called = true
+        return result
+      end)
+
+      local result = task:wait(100)
+      eq('RESULT', result)
+      eq(true, callback_called)
+      -- The closable should only be closed once (by the explicit close call)
+      -- handle_close_awaiting should detect is_closing and not call close again
+      eq(1, close_count)
+    end)
+
+    it_exec('_is_completing flag prevents multiple complete calls', function()
+      -- Test that _is_completing flag works correctly
+      local task = run(eternity)
+      local errors = {}
+
+      -- Try to complete twice in quick succession
+      vim.schedule(function()
+        local ok, err = pcall(function()
+          task:complete('FIRST')
+        end)
+        if not ok then
+          table.insert(errors, err)
+        end
+      end)
+
+      vim.schedule(function()
+        local ok, err = pcall(function()
+          task:complete('SECOND')
+        end)
+        if not ok then
+          table.insert(errors, err)
+        end
+      end)
+
+      local result = task:wait(100)
+
+      -- One should succeed
+      eq('FIRST', result)
+
+      -- The other should have errored
+      eq(1, #errors)
+      assert(
+        errors[1]:match('Task is already completing or completed'),
+        'Expected "already completing" error, got: ' .. errors[1]
+      )
+    end)
+
+    it_exec('child error during parent finalization is handled', function()
+      -- Test the race condition where a child errors while parent is finalizing
+      local parent_finalized = false
+      local child_error_raised = false
+
+      local parent = run(function()
+        local child = run(function()
+          -- Child sleeps briefly then errors
+          Async.sleep(5)
+          error('CHILD_ERROR')
+        end)
+
+        -- Parent completes immediately, starting finalization
+        -- This should trigger awaiting the child, which will error
+      end)
+
+      -- Wait for parent to complete
+      local ok, err = parent:pwait(100)
+
+      -- Parent should have gotten the child error
+      eq(false, ok)
+      assert(err:match('child error:.*CHILD_ERROR'), 'Expected child error, got: ' .. tostring(err))
+    end)
+
+    it_exec('callback called multiple times is handled gracefully', function()
+      -- Test that calling callback multiple times doesn't break things
+      local call_count = 0
+      local results = {}
+
+      local task = run(function()
+        local result = await(function(callback)
+          call_count = call_count + 1
+          callback('FIRST_CALL')
+
+          -- Try calling again (should be ignored)
+          vim.schedule(function()
+            call_count = call_count + 1
+            callback('SECOND_CALL')
+          end)
+        end)
+
+        table.insert(results, result)
+        return result
+      end)
+
+      local final_result = task:wait(100)
+
+      -- Should only get the first callback result
+      eq('FIRST_CALL', final_result)
+      eq(1, #results)
+      eq('FIRST_CALL', results[1])
+
+      -- Wait a bit for the second callback to potentially fire
+      run(function()
+        Async.sleep(20)
+      end):wait()
+
+      -- Both callbacks should have been called
+      eq(2, call_count)
+
+      -- But only the first one should have been processed
+      eq(1, #results)
+    end)
+
+    it_exec('simultaneous complete() calls in same tick are prevented', function()
+      -- This tests the atomic nature of _is_completing
+      local task --- @type vim.async.Task
+      local complete_results = {}
+
+      task = run(function()
+        -- Create two child tasks that will try to complete parent simultaneously
+        run(function()
+          Async.sleep(10)
+          local ok, err = pcall(function()
+            task:complete('CHILD_1')
+          end)
+          table.insert(complete_results, { child = 1, ok = ok, err = err })
+        end)
+
+        run(function()
+          Async.sleep(10)
+          local ok, err = pcall(function()
+            task:complete('CHILD_2')
+          end)
+          table.insert(complete_results, { child = 2, ok = ok, err = err })
+        end)
+
+        eternity()
+      end)
+
+      local result = task:wait(100)
+
+      -- Exactly one should have succeeded
+      local success_count = 0
+      local error_count = 0
+
+      for _, res in ipairs(complete_results) do
+        if res.ok then
+          success_count = success_count + 1
+        else
+          error_count = error_count + 1
+          assert(
+            res.err:match('Task is already completing or completed'),
+            'Unexpected error: ' .. tostring(res.err)
+          )
+        end
+      end
+
+      eq(1, success_count, 'Expected exactly one successful complete()')
+      eq(1, error_count, 'Expected exactly one failed complete()')
+
+      -- Result should be from the winning child
+      assert(
+        result == 'CHILD_1' or result == 'CHILD_2',
+        'Result should be from one of the children'
+      )
+    end)
+
+    it_exec('task can be closed even when _is_completing is set', function()
+      -- Test that setting _is_completing doesn't prevent closing
+      local task = run(function()
+        Async.sleep(50)
+        return 'NORMAL_COMPLETION'
+      end)
+
+      -- Start completing the task
+      vim.schedule(function()
+        task:complete('COMPLETED_EARLY')
+      end)
+
+      -- Try to close it immediately after
+      vim.schedule(function()
+        task:close()
+      end)
+
+      local result = task:wait(100)
+
+      -- The complete should win since it was scheduled first
+      eq('COMPLETED_EARLY', result)
+    end)
+
+    it_exec('closable cleanup happens even if close() errors', function()
+      -- Test that if a closable's close() method errors, we handle it gracefully
+      local close_called = false
+
+      local task = run(function()
+        local result = await(function(callback)
+          local closable = {
+            close = function()
+              close_called = true
+              error('CLOSE_ERROR')
+            end,
+          }
+
+          vim.schedule(function()
+            callback('RESULT')
+          end)
+
+          return closable
+        end)
+
+        return result
+      end)
+
+      task:close() -- This should trigger closing the closable
+
+      -- The task should complete with the close error
+      local ok, err = task:pwait(100)
+
+      eq(true, close_called, 'close() should have been called')
+      eq(false, ok, 'Task should have errored')
+      assert(err:match('CLOSE_ERROR'), 'Expected CLOSE_ERROR, got: ' .. tostring(err))
+    end)
+  end)
 end)

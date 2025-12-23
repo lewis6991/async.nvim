@@ -547,6 +547,11 @@ vim.async.semaphore({permits})                         *vim.async.semaphore()*
     Type: `fun(self, callback: (fun(...) -> ...)?)
 
 
+------------------------------------------------------------------------------
+*vim.async.Closable.is_closing*
+    Type: `(fun(self) -> boolean)?
+
+
 ==============================================================================
 *vim.async.Event*
 

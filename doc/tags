@@ -4,6 +4,7 @@ not	lua-async.txt	/*not*
 vim.async	lua-async.txt	/*vim.async*
 vim.async.Closable	lua-async.txt	/*vim.async.Closable*
 vim.async.Closable.close	lua-async.txt	/*vim.async.Closable.close*
+vim.async.Closable.is_closing	lua-async.txt	/*vim.async.Closable.is_closing*
 vim.async.Event	lua-async.txt	/*vim.async.Event*
 vim.async.Event:clear()	lua-async.txt	/*vim.async.Event:clear()*
 vim.async.Event:set()	lua-async.txt	/*vim.async.Event:set()*
