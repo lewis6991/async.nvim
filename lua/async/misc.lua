@@ -15,7 +15,7 @@ function M.join_n_1(max_jobs, funs)
 
   max_jobs = math.min(max_jobs, #funs)
 
-  local running = {} --- @type async.Task<any>[]
+  local running = {} --- @type vim.async.Task<any>[]
 
   -- Start the first batch of tasks
   for i = 1, max_jobs do
@@ -56,12 +56,12 @@ function M.join_n_2(max_jobs, funs)
         finish()
       elseif #remaining > 0 then
         local next_task = table.remove(remaining)
-        async.run(next_task):await(cb)
+        async.run(next_task):wait(cb)
       end
     end
 
     for i = 1, max_jobs do
-      async.run(assert(funs[i])):await(cb)
+      async.run(assert(funs[i])):wait(cb)
     end
   end)
 end
@@ -77,7 +77,7 @@ function M.join_n_3(max_jobs, funs)
 
   local semaphore = async.semaphore(max_jobs)
 
-  local tasks = {} --- @type async.Task<any>[]
+  local tasks = {} --- @type vim.async.Task<any>[]
 
   for _, fun in ipairs(funs) do
     tasks[#tasks + 1] = async.run(function()

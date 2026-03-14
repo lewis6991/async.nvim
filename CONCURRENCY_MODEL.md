@@ -1,7 +1,26 @@
 # The async.nvim Concurrency Model
 
-This document explains how async.nvim implements structured concurrency for Neovim.
+This document explains how async.nvim implements structured concurrency for Lua.
 If you've used async/await in JavaScript, Python, or other languages, some concepts will be familiar, but there are important differences in how tasks are organized and managed.
+
+## Event Loop Integration
+
+async.nvim is built on Lua coroutines and requires integration with an event loop.
+In Neovim, this integration happens automatically using `vim.wait` and `vim.schedule`.
+
+For non-Neovim environments, you'll need to provide equivalent functions via `async.init()`:
+
+```lua
+local async = require('async')
+
+async.init({
+  wait = my_wait_implementation,
+  schedule = my_schedule_implementation
+})
+```
+
+The rest of this document uses Neovim examples (`vim.async.*`), but the concepts
+apply equally to generic Lua usage with the `async.*` namespace.
 
 ## What is Structured Concurrency?
 
