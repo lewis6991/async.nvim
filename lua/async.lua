@@ -3,12 +3,84 @@ local util = require('async._util')
 local pack_len = util.pack_len
 local unpack_len = util.unpack_len
 local is_callable = util.is_callable
-local gc_fun = util.gc_fun
+local validate = util.validate
 
---- This module implements an asynchronous programming library for Neovim,
+--- @class vim.async.Timer: vim.async.Closable
+--- @field start fun(self, timeout: integer, repeat_interval: integer, callback: fun())
+
+--- @alias vim.async.TimerFactory fun(): vim.async.Timer
+
+--- @class vim.async.Runtime
+--- @field wait? fun(timeout: integer, predicate: fun(): boolean): boolean
+--- @field schedule? fun(callback: fun())
+--- @field new_timer? vim.async.TimerFactory
+
+--- @class vim.async.ReadyRuntime
+--- @field wait fun(timeout: integer, predicate: fun(): boolean): boolean
+--- @field schedule fun(callback: fun())
+--- @field new_timer? vim.async.TimerFactory
+
+-- Runtime dependencies (injected)
+--- @type vim.async.Runtime
+local _runtime = {
+  wait = nil,
+  schedule = nil,
+  new_timer = nil,
+}
+
+-- Auto-detect Neovim environment at module load time
+if vim and vim.wait and vim.schedule then
+  --- @param timeout integer
+  --- @param predicate fun(): boolean
+  --- @return boolean
+  _runtime.wait = function(timeout, predicate)
+    local ok = vim.wait(timeout, predicate)
+    return ok
+  end
+  --- @param callback fun()
+  _runtime.schedule = function(callback)
+    vim.schedule(callback)
+  end
+  _runtime.new_timer = function()
+    return vim.uv.new_timer()
+  end
+end
+
+-- Internal helper to get runtime
+--- @return vim.async.ReadyRuntime
+local function get_runtime()
+  local wait = _runtime.wait
+  local schedule = _runtime.schedule
+
+  if not wait or not schedule then
+    error('async not initialized. Call async.init({ wait = ..., schedule = ... }) first', 2)
+  end
+
+  return {
+    wait = wait,
+    schedule = schedule,
+    new_timer = _runtime.new_timer,
+  }
+end
+
+local function get_timer_fn()
+  local new_timer = get_runtime().new_timer
+  if not new_timer then
+    error(
+      'async.sleep() requires a new_timer function. Provide one via async.init({ new_timer = ... })',
+      2
+    )
+  end
+  return new_timer
+end
+
+--- This module implements an asynchronous programming library for Lua,
 --- centered around the principle of **Structured Concurrency**. This design
 --- makes concurrent programs easier to reason about, more reliable, and less
 --- prone to resource leaks.
+---
+--- The library works seamlessly with Neovim and other Lua environments that
+--- provide an event loop.
 ---
 --- ### Core Philosophy: Structured Concurrency
 ---
@@ -214,6 +286,36 @@ local gc_fun = util.gc_fun
 --- @class vim.async
 local M = {}
 
+--- Initialize async runtime for non-Neovim environments.
+---
+--- In Neovim, initialization happens automatically. Only call this if you're
+--- using the library outside of Neovim.
+---
+--- See README.md for details on using async in non-Neovim environments.
+---
+--- @param opts table Configuration table with fields:
+---   - wait (function): Block main thread and run event loop until predicate
+---     returns true or timeout. Signature: wait(timeout, predicate) -> boolean
+---   - schedule (function): Defer callback to next event loop iteration.
+---     Signature: schedule(callback) -> nil
+---   - new_timer (function, optional): Create a new timer handle.
+---     The returned object must have `:start(ms, repeat, callback)` and
+---     `:close(callback?)` methods (compatible with libuv timer interface).
+---     Required for `async.sleep()` and `async.timeout()`.
+function M.init(opts)
+  validate('opts', opts, 'table')
+  validate('opts.wait', opts.wait, 'callable')
+  validate('opts.schedule', opts.schedule, 'callable')
+
+  _runtime.wait = opts.wait
+  _runtime.schedule = opts.schedule
+
+  if opts.new_timer then
+    validate('opts.new_timer', opts.new_timer, 'callable')
+    _runtime.new_timer = opts.new_timer
+  end
+end
+
 -- Use max 32-bit signed int value to avoid overflow on 32-bit systems.
 -- Do not use `math.huge` as it is not interpreted as a positive integer on all
 -- platforms.
@@ -226,6 +328,7 @@ local threads = setmetatable({}, { __mode = 'k' })
 --- Returns the currently running task.
 --- @return vim.async.Task<any>?
 local function running()
+  --- @diagnostic disable-next-line: access-invisible, undefined-field
   local task = threads[coroutine.running()]
   if task and not task:completed() then
     return task
@@ -252,7 +355,7 @@ local function check_yield(marker, err, ...)
     local task = assert(running(), 'Not in async context')
     task:_raise(resume_error)
     -- Return an error to the caller. This will also leave the task in a dead
-    -- and unfinshed state
+    -- and unfinished state
     error(resume_error, 0)
   elseif err then
     error(err, 0)
@@ -339,14 +442,10 @@ do --- Task
     return self
   end
 
-  -- --- @return boolean
-  -- function Task:closed()
-  --   return self._future._err == 'closed'
-  -- end
-
   --- @package
+  --- @param cb fun(err?: any, ...: any)
   function Task:_unwait(cb)
-    return self._future:_remove_cb(cb)
+    self._future:_remove_cb(cb)
   end
 
   --- Returns whether the Task has completed.
@@ -382,14 +481,16 @@ do --- Task
       return
     end
 
+    --- @type vim.async.ReadyRuntime
+    local runtime = get_runtime()
+
     if
-      not vim.wait(callback_or_timeout or MAX_TIMEOUT, function()
+      not runtime.wait(callback_or_timeout or MAX_TIMEOUT, function()
         return self:completed()
       end)
     then
       error('timeout', 2)
     end
-
     local res = pack_len(self._future:result())
 
     assert(self:status() == 'completed' or res[2] == yield_error)
@@ -408,7 +509,7 @@ do --- Task
   --- @param timeout integer?
   --- @return boolean, R...
   function Task:pwait(timeout)
-    vim.validate('timeout', timeout, 'number', true)
+    validate('timeout', timeout, 'number', true)
     return pcall(self.wait, self, timeout)
   end
 
@@ -486,11 +587,15 @@ do --- Task
   --- @param err any
   function Task:_raise(err)
     if self:status() == 'running' then
+      --- @type vim.async.ReadyRuntime
+      local runtime = get_runtime()
       -- TODO(lewis6991): is there a better way to do this?
-      vim.schedule(function()
+      runtime.schedule(function()
+        --- @diagnostic disable-next-line: await-in-sync
         self:_resume(err)
       end)
     else
+      --- @diagnostic disable-next-line: await-in-sync
       self:_resume(err)
     end
   end
@@ -546,6 +651,7 @@ do --- Task
 
   do -- Task:_resume()
     --- @private
+    --- @async
     --- @param stat boolean
     --- @param ...R... result
     function Task:_finalize0(stat, ...)
@@ -581,6 +687,7 @@ do --- Task
     end
 
     --- @private
+    --- @async
     --- Should only be called in Task:_resume_co()
     --- @param stat boolean
     --- @param ...R... result
@@ -706,6 +813,7 @@ do --- Task
     end
 
     --- @package
+    --- @async
     --- @param ... any the first argument is the error, except for when the coroutine begins
     function Task:_resume(...)
       --- @type {[integer]: any, n: integer}?
@@ -721,6 +829,7 @@ do --- Task
         end
 
         local should_return, close_err_args = handle_close_awaiting(self, self._awaiting, function()
+          --- @diagnostic disable-next-line: await-in-sync
           self:_resume(unpack_len(args))
         end)
         if should_return then
@@ -744,8 +853,10 @@ do --- Task
         -- This ensures cancellations persist across pcall catches.
         local awaitable = handle_co_resume(self._thread, function(stat2, ...)
           if self._closing and stat2 then
+            --- @diagnostic disable-next-line: await-in-sync
             self:_finalize(false, 'closed')
           else
+            --- @diagnostic disable-next-line: await-in-sync
             self:_finalize(stat2, ...)
           end
         end, coroutine.resume(self._thread, resume_marker, unpack_len(args)))
@@ -756,6 +867,7 @@ do --- Task
 
         args, self._awaiting = handle_awaitable(awaitable, function(...)
           if not self:completed() then
+            --- @diagnostic disable-next-line: await-in-sync
             self:_resume(...)
           end
         end)
@@ -807,14 +919,15 @@ do --- M.run
   --- @param ... T... Arguments to pass to the function
   --- @return vim.async.Task<R...>
   local function run(opts, func, ...)
-    vim.validate('opts', opts, 'table', true)
-    vim.validate('func', func, 'callable')
+    validate('opts', opts, 'table', true)
+    validate('func', func, 'callable')
     -- TODO(lewis6991): add task names
     local task = Task._new(func, opts)
     local info = debug.getinfo(2, 'Sl')
     if info and info.currentline then
       task._caller = ('%s:%d'):format(info.source, info.currentline)
     end
+    --- @diagnostic disable-next-line: await-in-sync
     task:_resume(...)
     return task
   end
@@ -905,6 +1018,7 @@ do --- M.await()
   --- @overload async fun(func: (fun(callback: fun(...:R...)): vim.async.Closable?)): R...
   --- @overload async fun(argc: integer, func: (fun(...:T..., callback: fun(...:R...)): vim.async.Closable?), ...:T...): R...
   --- @overload async fun(task: vim.async.Task<R>): R...
+  --- @return R...
   function M.await(...)
     local task = running()
     assert(task, 'Not in async context')
@@ -922,13 +1036,14 @@ do --- M.await()
     elseif type(arg1) == 'function' then
       fn = norm_cb_fun(1, arg1)
     elseif getmetatable(arg1) == Task then
+      --- @param callback fun(err?: any, ...: R...)
       fn = function(callback)
         --- @cast arg1 vim.async.Task<R>
         arg1:wait(callback)
         return arg1
       end
     else
-      error('Invalid arguments, expected Task or (argc, func) got: ' .. vim.inspect(arg1), 2)
+      error('Invalid arguments, expected Task or (argc, func) got: ' .. tostring(arg1), 2)
     end
 
     return check_yield(coroutine.yield(yield_marker, fn))
@@ -995,7 +1110,7 @@ end
 --- @return boolean ok
 --- @return any|T... err_or_result
 function M.pcall(fn)
-  vim.validate('fn', fn, 'callable')
+  validate('fn', fn, 'callable')
 
   local captured_traceback
   local results = pack_len(xpcall(fn, function(err)
@@ -1060,8 +1175,8 @@ end
 --- @param func fun(...: T..., callback: fun(...: R...)): vim.async.Closable?
 --- @return async fun(...:T...): R...
 function M.wrap(argc, func)
-  vim.validate('argc', argc, 'number')
-  vim.validate('func', func, 'callable')
+  validate('argc', argc, 'number')
+  validate('func', func, 'callable')
   --- @async
   return function(...)
     return M.await(argc, func, ...)
@@ -1074,7 +1189,7 @@ do --- M.iter(), M.await_all(), M.await_any()
   --- @param tasks vim.async.Task<R>[] A list of tasks to wait for and iterate over.
   --- @return async fun(): (integer?, any?, ...R) iterator that yields the index, error, and results of each task.
   local function iter(tasks)
-    vim.validate('tasks', tasks, 'table')
+    validate('tasks', tasks, 'table')
 
     -- TODO(lewis6991): do not return err, instead raise any errors as they occur
     assert(running(), 'Not in async context')
@@ -1090,6 +1205,8 @@ do --- M.iter(), M.await_all(), M.await_any()
     -- Wait on all the tasks. Keep references to the task futures and wait
     -- callbacks so we can remove them when the iterator is garbage collected.
     for i, task in ipairs(tasks) do
+      --- @param err? any
+      --- @param ... R
       local function cb(err, ...)
         remaining = remaining - 1
         queue:put_nowait(pack_len(err, i, ...))
@@ -1103,7 +1220,7 @@ do --- M.iter(), M.await_all(), M.await_any()
     end
 
     --- @async
-    return gc_fun(function()
+    return util.gc_fun(function()
       local r = queue:get()
       if r then
         local err = r[1]
@@ -1206,6 +1323,9 @@ do --- M.iter(), M.await_all(), M.await_any()
     local itr = iter(tasks)
     local results = {} --- @type table<integer,table>
 
+    --- @param i integer?
+    --- @param ... any
+    --- @return boolean
     local function collect(i, ...)
       if i then
         results[i] = pack_len(...)
@@ -1257,10 +1377,14 @@ end
 --- @async
 --- @param duration integer ms
 function M.sleep(duration)
-  vim.validate('duration', duration, 'number')
-  M.await(1, function(callback)
-    -- TODO(lewis6991): should return the result of defer_fn here.
-    vim.defer_fn(callback, duration)
+  validate('duration', duration, 'number')
+  local new_timer = get_timer_fn()
+  M.await(function(callback)
+    local timer = new_timer()
+    timer:start(duration, 0, function()
+      timer:close()
+      callback()
+    end)
   end)
 end
 
@@ -1274,10 +1398,11 @@ end
 --- @param task vim.async.Task<R>
 --- @return R
 function M.timeout(duration, task)
-  vim.validate('duration', duration, 'number')
-  vim.validate('task', task, 'table')
+  validate('duration', duration, 'number')
+  validate('task', task, 'table')
+  local new_timer = get_timer_fn()
   local timer = M.run(M.await, function(callback)
-    local t = assert(vim.uv.new_timer())
+    local t = new_timer()
     t:start(duration, 0, callback)
     return t
   end)
@@ -1572,7 +1697,7 @@ do --- M._queue()
     self._right_i = self._right_i + 1
     self._items[self._right_i] = value
     self._non_empty:set(1)
-    if self:size() == self.max_size then
+    if self:size() == self:max_size() then
       self._non_full:clear()
     end
   end
@@ -1707,7 +1832,7 @@ do --- M.semaphore()
   --- @param permits? integer (default: 1)
   --- @return vim.async.Semaphore
   function M.semaphore(permits)
-    vim.validate('permits', permits, 'number', true)
+    validate('permits', permits, 'number', true)
     permits = permits or 1
     local obj = setmetatable({
       _max_permits = permits,
@@ -1748,11 +1873,13 @@ do --- M._inspect_tree()
         prefix or '',
         parent and (last and '└─ ' or '├─ ') or '',
         task.name or '',
-        task._caller,
+        task._caller or '@unknown',
         task:status()
       )
       local child_prefix = (prefix or '') .. (parent and (last and '   ' or '│  ') or '')
-      vim.list_extend(r, inspect(task, child_prefix))
+      for _, line in ipairs(inspect(task, child_prefix)) do
+        r[#r + 1] = line
+      end
     end
     return r
   end

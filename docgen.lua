@@ -124,7 +124,10 @@ local function write_member(file, mod_name, member, typ_names)
     else
       local sep = member.is_meth and ':' or '.'
       sig = ('%s%s%s(%s)'):format(mod_name, sep, member.name, table.concat(param_names, ', '))
-      tag = ('*%s%s%s()*'):format(mod_name, sep, member.name)
+      
+      -- Strip 'vim.' prefix from tags for generic module namespace
+      local tag_name = mod_name:gsub('^vim%.', '')
+      tag = ('*%s%s%s()*'):format(tag_name, sep, member.name)
     end
     write_header(file, sig, tag)
 

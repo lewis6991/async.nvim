@@ -1,10 +1,13 @@
 ==============================================================================
 *vim.async*
 
-This module implements an asynchronous programming library for Neovim,
+This module implements an asynchronous programming library for Lua,
 centered around the principle of **Structured Concurrency**. This design
 makes concurrent programs easier to reason about, more reliable, and less
 prone to resource leaks.
+
+The library works seamlessly with Neovim and other Lua environments that
+provide an event loop.
 
                                        *Core Philosophy: Structured Concurrency*
 
@@ -208,7 +211,29 @@ automates the lifetime, cancellation, and error management that must be
 handled explicitly in Go.
 
 ------------------------------------------------------------------------------
-vim.async.run({func}, {...})                                 *vim.async.run()*
+vim.async.init({opts})                                          *async.init()*
+
+    Initialize async runtime for non-Neovim environments.
+
+    In Neovim, initialization happens automatically. Only call this if you're
+    using the library outside of Neovim.
+
+    See README.md for details on using async in non-Neovim environments.
+
+    Parameters: ~
+    - {opts} (`table`): Configuration table with fields:
+- wait (function): Block main thread and run event loop until predicate
+returns true or timeout. Signature: wait(timeout, predicate) -> boolean
+- schedule (function): Defer callback to next event loop iteration.
+Signature: schedule(callback) -> nil
+- new_timer (function, optional): Create a new timer handle.
+The returned object must have `:start(ms, repeat, callback)` and
+`:close(callback?)` methods (compatible with libuv timer interface).
+Required for `async.sleep()` and `async.timeout()`.
+
+
+------------------------------------------------------------------------------
+vim.async.run({func}, {...})                                     *async.run()*
 
     Run a function in an async context, asynchronously.
 
@@ -241,7 +266,7 @@ vim.async.run({func}, {...})                                 *vim.async.run()*
     - (`Task<R ...>`)
 
 ------------------------------------------------------------------------------
-vim.async.await({...})                                     *vim.async.await()*
+vim.async.await({...})                                         *async.await()*
 
     Asynchronous blocking wait
 
@@ -287,10 +312,10 @@ vim.async.await({...})                                     *vim.async.await()*
     - {...} (`any`): see overloads
 
     Returns: ~
-    - (`any ...`)
+    - (`R ...`)
 
 ------------------------------------------------------------------------------
-vim.async.is_closing()                                *vim.async.is_closing()*
+vim.async.is_closing()                                    *async.is_closing()*
 
     Returns true if the current task has been closed.
 
@@ -300,7 +325,7 @@ vim.async.is_closing()                                *vim.async.is_closing()*
     - (`boolean`)
 
 ------------------------------------------------------------------------------
-vim.async.pcall({fn})                                      *vim.async.pcall()*
+vim.async.pcall({fn})                                          *async.pcall()*
 
     Protected call for async functions that propagates child task errors.
 
@@ -361,7 +386,7 @@ vim.async.pcall({fn})                                      *vim.async.pcall()*
     - {err_or_result} (`(any|T ...)`)
 
 ------------------------------------------------------------------------------
-vim.async.wrap({argc}, {func})                              *vim.async.wrap()*
+vim.async.wrap({argc}, {func})                                  *async.wrap()*
 
     Creates an async function from a callback style function.
 
@@ -400,7 +425,7 @@ vim.async.wrap({argc}, {func})                              *vim.async.wrap()*
     - (`async fun(...: T ...) -> R ...`)
 
 ------------------------------------------------------------------------------
-vim.async.iter({tasks})                                     *vim.async.iter()*
+vim.async.iter({tasks})                                         *async.iter()*
 
     Waits for multiple tasks to finish and iterates over their results.
 
@@ -453,7 +478,7 @@ vim.async.iter({tasks})                                     *vim.async.iter()*
     - {iterator} (`async fun() -> (integer?,any,unknown)`): that yields the index, error, and results of each task.
 
 ------------------------------------------------------------------------------
-vim.async.await_all({tasks})                           *vim.async.await_all()*
+vim.async.await_all({tasks})                               *async.await_all()*
 
     Wait for all tasks to finish and return their results.
 
@@ -496,7 +521,7 @@ vim.async.await_all({tasks})                           *vim.async.await_all()*
     - (`table<integer,unknown>`)
 
 ------------------------------------------------------------------------------
-vim.async.await_any({tasks})                           *vim.async.await_any()*
+vim.async.await_any({tasks})                               *async.await_any()*
 
     Wait for the first task to complete and return its result.
 
@@ -532,7 +557,7 @@ vim.async.await_any({tasks})                           *vim.async.await_any()*
     - {results} (`any ...`)
 
 ------------------------------------------------------------------------------
-vim.async.sleep({duration})                                *vim.async.sleep()*
+vim.async.sleep({duration})                                    *async.sleep()*
 
     Asynchronously sleep for a given duration.
 
@@ -547,7 +572,7 @@ vim.async.sleep({duration})                                *vim.async.sleep()*
 
 
 ------------------------------------------------------------------------------
-vim.async.timeout({duration}, {task})                    *vim.async.timeout()*
+vim.async.timeout({duration}, {task})                        *async.timeout()*
 
     Run a task with a timeout.
 
@@ -568,7 +593,7 @@ vim.async.timeout({duration}, {task})                    *vim.async.timeout()*
     - (`R`)
 
 ------------------------------------------------------------------------------
-vim.async.semaphore({permits})                         *vim.async.semaphore()*
+vim.async.semaphore({permits})                             *async.semaphore()*
 
     Create an async semaphore that allows up to a given number of acquisitions.
 
@@ -623,7 +648,7 @@ The `wait()` method blocks until the flag is set to `true`. The flag is
 set to `false` initially.
 
 ------------------------------------------------------------------------------
-vim.async.Event:set({max_woken})                       *vim.async.Event:set()*
+vim.async.Event:set({max_woken})                           *async.Event:set()*
 
     Set the event.
 
@@ -637,7 +662,7 @@ vim.async.Event:set({max_woken})                       *vim.async.Event:set()*
 
 
 ------------------------------------------------------------------------------
-vim.async.Event:wait()                                *vim.async.Event:wait()*
+vim.async.Event:wait()                                    *async.Event:wait()*
 
     Wait until the event is set.
 
@@ -649,7 +674,7 @@ vim.async.Event:wait()                                *vim.async.Event:wait()*
 
 
 ------------------------------------------------------------------------------
-vim.async.Event:clear()                              *vim.async.Event:clear()*
+vim.async.Event:clear()                                  *async.Event:clear()*
 
     Clear (unset) the event.
 
@@ -664,7 +689,7 @@ Future objects are used to bridge low-level callback-based code with
 high-level async/await code.
 
 ------------------------------------------------------------------------------
-vim.async.Future:completed()                    *vim.async.Future:completed()*
+vim.async.Future:completed()                        *async.Future:completed()*
 
     Return `true` if the Future is completed.
 
@@ -672,7 +697,7 @@ vim.async.Future:completed()                    *vim.async.Future:completed()*
     - (`boolean`)
 
 ------------------------------------------------------------------------------
-vim.async.Future:result()                          *vim.async.Future:result()*
+vim.async.Future:result()                              *async.Future:result()*
 
     Return the result of the Future.
 
@@ -687,7 +712,7 @@ vim.async.Future:result()                          *vim.async.Future:result()*
     - {error} (`any ...`): or result
 
 ------------------------------------------------------------------------------
-vim.async.Future:wait({callback})                    *vim.async.Future:wait()*
+vim.async.Future:wait({callback})                        *async.Future:wait()*
 
     Add a callback to be run when the Future is done.
 
@@ -703,7 +728,7 @@ vim.async.Future:wait({callback})                    *vim.async.Future:wait()*
 
 
 ------------------------------------------------------------------------------
-vim.async.Future:complete({err}, {...})          *vim.async.Future:complete()*
+vim.async.Future:complete({err}, {...})              *async.Future:complete()*
 
     Mark the Future as complete and set its result.
 
@@ -720,7 +745,7 @@ vim.async.Future:complete({err}, {...})          *vim.async.Future:complete()*
 ==============================================================================
 *vim.async.Queue*
 ------------------------------------------------------------------------------
-vim.async.Queue:size()                                *vim.async.Queue:size()*
+vim.async.Queue:size()                                    *async.Queue:size()*
 
     Returns the number of items in the queue.
 
@@ -728,7 +753,7 @@ vim.async.Queue:size()                                *vim.async.Queue:size()*
     - (`integer`)
 
 ------------------------------------------------------------------------------
-vim.async.Queue:max_size()                        *vim.async.Queue:max_size()*
+vim.async.Queue:max_size()                            *async.Queue:max_size()*
 
     Returns the maximum number of items in the queue.
 
@@ -736,7 +761,7 @@ vim.async.Queue:max_size()                        *vim.async.Queue:max_size()*
     - (`integer?`)
 
 ------------------------------------------------------------------------------
-vim.async.Queue:put({value})                           *vim.async.Queue:put()*
+vim.async.Queue:put({value})                               *async.Queue:put()*
 
     Put an item into the queue.
 
@@ -750,7 +775,7 @@ vim.async.Queue:put({value})                           *vim.async.Queue:put()*
 
 
 ------------------------------------------------------------------------------
-vim.async.Queue:get()                                  *vim.async.Queue:get()*
+vim.async.Queue:get()                                      *async.Queue:get()*
 
     Get an item from the queue.
 
@@ -763,7 +788,7 @@ vim.async.Queue:get()                                  *vim.async.Queue:get()*
     - (`any`)
 
 ------------------------------------------------------------------------------
-vim.async.Queue:get_nowait()                    *vim.async.Queue:get_nowait()*
+vim.async.Queue:get_nowait()                        *async.Queue:get_nowait()*
 
     Get an item from the queue without blocking.
 
@@ -773,13 +798,47 @@ vim.async.Queue:get_nowait()                    *vim.async.Queue:get_nowait()*
     - (`any`)
 
 ------------------------------------------------------------------------------
-vim.async.Queue:put_nowait({value})             *vim.async.Queue:put_nowait()*
+vim.async.Queue:put_nowait({value})                 *async.Queue:put_nowait()*
 
     Put an item into the queue without blocking.
     If no free slot is immediately available, raise "Queue is full" error.
 
     Parameters: ~
     - {value} (`any`)
+
+
+==============================================================================
+*vim.async.ReadyRuntime*
+------------------------------------------------------------------------------
+*vim.async.ReadyRuntime.wait*
+    Type: `fun(timeout: integer, predicate: fun() -> boolean) -> boolean
+
+
+------------------------------------------------------------------------------
+*vim.async.ReadyRuntime.schedule*
+    Type: `fun(callback: fun())
+
+
+------------------------------------------------------------------------------
+*vim.async.ReadyRuntime.new_timer*
+    Type: `vim.async.TimerFactory?
+
+
+==============================================================================
+*vim.async.Runtime*
+------------------------------------------------------------------------------
+*vim.async.Runtime.wait*
+    Type: `(fun(timeout: integer, predicate: fun(...) -> ...) -> boolean)?
+
+
+------------------------------------------------------------------------------
+*vim.async.Runtime.schedule*
+    Type: `(fun(callback: fun(...) -> ...))?
+
+
+------------------------------------------------------------------------------
+*vim.async.Runtime.new_timer*
+    Type: `vim.async.TimerFactory?
 
 
 ==============================================================================
@@ -794,7 +853,7 @@ The preferred way to use a Semaphore is with the `with()` method, which
 automatically acquires and releases the semaphore around a function call.
 
 ------------------------------------------------------------------------------
-vim.async.Semaphore:with({fn})                    *vim.async.Semaphore:with()*
+vim.async.Semaphore:with({fn})                        *async.Semaphore:with()*
 
     Executes a function within the semaphore.
 
@@ -814,7 +873,7 @@ vim.async.Semaphore:with({fn})                    *vim.async.Semaphore:with()*
     - (`R ...`): Result(s) of the executed function.
 
 ------------------------------------------------------------------------------
-vim.async.Semaphore:acquire()                  *vim.async.Semaphore:acquire()*
+vim.async.Semaphore:acquire()                      *async.Semaphore:acquire()*
 
     Acquire a semaphore.
 
@@ -826,7 +885,7 @@ vim.async.Semaphore:acquire()                  *vim.async.Semaphore:acquire()*
 
 
 ------------------------------------------------------------------------------
-vim.async.Semaphore:release()                  *vim.async.Semaphore:release()*
+vim.async.Semaphore:release()                      *async.Semaphore:release()*
 
     Release a semaphore.
 
@@ -857,7 +916,7 @@ Note a Task can be waited on via more than one waiter.
 
 
 ------------------------------------------------------------------------------
-vim.async.Task:completed()                        *vim.async.Task:completed()*
+vim.async.Task:completed()                            *async.Task:completed()*
 
     Returns whether the Task has completed.
 
@@ -865,7 +924,7 @@ vim.async.Task:completed()                        *vim.async.Task:completed()*
     - (`boolean`)
 
 ------------------------------------------------------------------------------
-vim.async.Task:wait({callback_or_timeout})             *vim.async.Task:wait()*
+vim.async.Task:wait({callback_or_timeout})                 *async.Task:wait()*
 
     Add a callback to be run when the Task has completed.
 
@@ -897,7 +956,7 @@ vim.async.Task:wait({callback_or_timeout})             *vim.async.Task:wait()*
     - (`any ...?`)
 
 ------------------------------------------------------------------------------
-vim.async.Task:pwait({timeout})                       *vim.async.Task:pwait()*
+vim.async.Task:pwait({timeout})                           *async.Task:pwait()*
 
     Protected-call version of `wait()`.
 
@@ -912,7 +971,7 @@ vim.async.Task:pwait({timeout})                       *vim.async.Task:pwait()*
     - (`R ...`)
 
 ------------------------------------------------------------------------------
-vim.async.Task:detach()                              *vim.async.Task:detach()*
+vim.async.Task:detach()                                  *async.Task:detach()*
 
     Detach a task from its parent.
 
@@ -922,7 +981,7 @@ vim.async.Task:detach()                              *vim.async.Task:detach()*
     - (`vim.async.Task`) (See |vim.async.Task|)
 
 ------------------------------------------------------------------------------
-vim.async.Task:traceback({msg}, {level})          *vim.async.Task:traceback()*
+vim.async.Task:traceback({msg}, {level})              *async.Task:traceback()*
 
     Get the traceback of a task when it is not active.
     Will also get the traceback of nested tasks.
@@ -935,7 +994,7 @@ vim.async.Task:traceback({msg}, {level})          *vim.async.Task:traceback()*
     - {traceback} (`string`)
 
 ------------------------------------------------------------------------------
-vim.async.Task:raise_on_error()              *vim.async.Task:raise_on_error()*
+vim.async.Task:raise_on_error()                  *async.Task:raise_on_error()*
 
     If a task completes with an error, raise the error
 
@@ -943,7 +1002,7 @@ vim.async.Task:raise_on_error()              *vim.async.Task:raise_on_error()*
     - {self} (`vim.async.Task`) (See |vim.async.Task|)
 
 ------------------------------------------------------------------------------
-vim.async.Task:close({callback})                      *vim.async.Task:close()*
+vim.async.Task:close({callback})                          *async.Task:close()*
 
     Close the task and all of its children.
     If callback is provided it will run asynchronously,
@@ -954,7 +1013,7 @@ vim.async.Task:close({callback})                      *vim.async.Task:close()*
 
 
 ------------------------------------------------------------------------------
-vim.async.Task:complete({...})                     *vim.async.Task:complete()*
+vim.async.Task:complete({...})                         *async.Task:complete()*
 
     Complete a task with the given values, cancelling any remaining work.
 
@@ -975,7 +1034,7 @@ vim.async.Task:complete({...})                     *vim.async.Task:complete()*
 
 
 ------------------------------------------------------------------------------
-vim.async.Task:status()                              *vim.async.Task:status()*
+vim.async.Task:status()                                  *async.Task:status()*
 
     Returns the status of the task:
     - 'running'    : task is running (that is, is called `status()`).
@@ -987,6 +1046,17 @@ vim.async.Task:status()                              *vim.async.Task:status()*
 
     Returns: ~
     - (`("running"|"awaiting"|"normal"|"scheduled"|"completed")`)
+
+==============================================================================
+*vim.async.Timer*
+------------------------------------------------------------------------------
+*vim.async.Timer.start*
+    Type: `fun(self, timeout: integer, repeat_interval: integer, callback: fun())
+
+
+==============================================================================
+*vim.async.TimerFactory*
+    Type: `fun() -> vim.async.Timer
 
 ==============================================================================
 *vim.async.run.Opts*

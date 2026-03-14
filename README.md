@@ -1,8 +1,36 @@
 # async.nvim
 
-Async library for Neovim plugins
+Structured concurrency library for Lua 5.1, built on coroutines.
 
 🚧 WIP and Under Construction 🚧
+
+## Installation
+
+### For Neovim Users
+
+Install via your preferred plugin manager.
+The library auto-configures when running in Neovim.
+
+### For Other Lua Environments
+
+Require the module and configure it with your event loop integration:
+
+```lua
+local async = require('async')
+
+-- Provide event loop integration
+async.init({
+  wait = function(timeout, predicate)
+    -- Block main thread, run event loop until predicate() returns true
+    -- or timeout milliseconds elapsed
+    -- Returns: true if predicate became true, false if timeout
+  end,
+  
+  schedule = function(callback)
+    -- Defer callback to next event loop iteration
+  end
+})
+```
 
 ## Principles
 
@@ -10,6 +38,30 @@ Async library for Neovim plugins
 - Tasks always run to completion and are never orphaned unless explicitly detached.
 - Tasks are only ever created with `async.run()`
 - Cancellation/closing propagates downwards and errors propagate upwards
+
+## Quick Start
+
+### In Neovim
+
+```lua
+-- Auto-configured, just use it
+vim.async.run(function()
+  vim.async.sleep(100)
+  print("Hello after 100ms")
+end)
+```
+
+### In Generic Lua
+
+```lua
+local async = require('async')
+
+-- After calling async.init() with your event loop...
+async.run(function()
+  async.sleep(100)
+  print("Hello after 100ms")
+end)
+```
 
 ## Concepts
 
@@ -74,6 +126,8 @@ This quickly becomes unwieldy as the number of jobs increases.
 
 `async.nvim` lets you write this in a linear, readable style:
 
+#### In Neovim
+
 ```lua
 -- Wrap the callback-based function (3 = callback position)
 local run_job_a = vim.async.wrap(3, run_job)
@@ -94,10 +148,32 @@ local code = vim.async.run(function()
 end):wait()
 ```
 
+#### In Generic Lua
+
+```lua
+-- Wrap the callback-based function (3 = callback position)
+local run_job_a = async.wrap(3, run_job)
+
+-- Create an async context
+local code = async.run(function()
+  local code1 = run_job_a('echo', {'foo'})
+  if code1 ~= 0 then
+    return
+  end
+
+  local code2 = run_job_a('echo', {'bar'})
+  if code2 ~= 0 then
+    return
+  end
+
+  return run_job_a('echo', {'baz'})
+end):wait()
+```
+
 Now, you can call `run_job_a` imperatively, without callbacks.
 The async version returns the same results as the callback would have received.
 
-Additionally, since `run_job_a` returns a handle (e.g., `uv_process_t`), `vim.async.run` will automatically close it when the task completes or is manually closed.
+Additionally, since `run_job_a` returns a handle (e.g., `uv_process_t`), `async.run` will automatically close it when the task completes or is manually closed.
 
 ---
 
@@ -209,7 +285,7 @@ struct SwiftConcurrencyApp {
 }
 ```
 
-### Lua with async.nvim
+### Lua with async.nvim (Neovim)
 
 ```lua
 --- @async
@@ -242,6 +318,61 @@ local main = async.run(function()
 
   -- Create a parent task
   local parentTask = vim.async.run(function()
+    print('Parent Task: Launched.')
+
+    -- Create child tasks using async.run
+    -- As the tasks are created in the scope of parentTask. This
+    -- also implies cancellation propagation.
+    local child1 = async.run(longRunningChildTask, 1)
+    local child2 = async.run(longRunningChildTask, 2)
+
+    -- Await the children
+    _ = async.await_all({ child1, child2 })
+
+    print('Parent Task: All children should be done/cancelled.')
+  end)
+
+  async.sleep(1000) -- Wait 1 second
+  parentTask:close() -- Cancel parent task
+
+  async.await(parentTask) -- Wait for the parent task (and its children) to finish/cancel
+  print('Main Task: Exiting.')
+end)
+```
+
+### Lua with async.nvim (Generic)
+
+```lua
+--- @async
+local function longRunningChildTask(id)
+  print(('Child Task (%d): Starting...'):format(id))
+  for i = 1, 10 do
+    -- Option 1: Check `is_cancelled()` for graceful exit
+    if async.is_cancelled() then
+      print(('Child Task (%d): Was cancelled.'):format(id))
+      return
+    end
+
+    -- Option 2: `check_cancelled()` throws if cancelled
+    local _, err = pcall(async.check_cancelled)
+    if err then
+      print(('Child Task (%d): Cancellation detected by check_cancelled().'):format(id))
+      return
+    end
+
+    print(('Child Task (%d): Working... step %d'):format(id, i))
+    -- Simulate work with a cancellable sleep
+    async.sleep(500) -- 0.5 second
+  end
+  print(('Child Task (%d): Completed naturally'):format(id))
+end
+
+--- @async
+local main = async.run(function()
+  print('Main Task: Starting...')
+
+  -- Create a parent task
+  local parentTask = async.run(function()
     print('Parent Task: Launched.')
 
     -- Create child tasks using async.run

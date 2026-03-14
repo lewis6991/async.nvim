@@ -34,7 +34,7 @@ STYLUA_PLATFORM_MACOS := macos-aarch64
 STYLUA_PLATFORM_LINUX := linux-x86_64
 STYLUA_PLATFORM := $(STYLUA_PLATFORM_$(UNAME))
 
-STYLUA_VERSION := v0.20.0
+STYLUA_VERSION := v2.4.0
 STYLUA_ZIP := stylua-$(STYLUA_PLATFORM).zip
 STYLUA_URL_BASE := https://github.com/JohnnyMorganz/StyLua/releases/download
 STYLUA_URL := $(STYLUA_URL_BASE)/$(STYLUA_VERSION)/$(STYLUA_ZIP)
@@ -56,23 +56,41 @@ format-check: stylua
 format: stylua
 	./stylua $(FILES)
 
-LUALS_VERSION := 3.9.3
-LUALS_TARBALL := lua-language-server-$(LUALS_VERSION)-$(shell uname -s)-$(shell uname -m).tar.gz
-LUALS_URL := https://github.com/LuaLS/lua-language-server/releases/download/$(LUALS_VERSION)/$(LUALS_TARBALL)
+EMMYLUA_REF := 0.21.0
+EMMYLUA_OS ?= $(shell uname -s | tr '[:upper:]' '[:lower:]')
+ifneq ($(filter $(shell uname -m),x86_64 amd64),)
+  EMMYLUA_ARCH := x64
+else
+  EMMYLUA_ARCH := arm64
+endif
+EMMYLUA_RELEASE_URL := https://github.com/EmmyLuaLs/emmylua-analyzer-rust/releases/download/$(EMMYLUA_REF)/emmylua_check-$(EMMYLUA_OS)-$(EMMYLUA_ARCH).tar.gz
+EMMYLUA_RELEASE_TAR := deps/emmylua_check-$(EMMYLUA_REF)-$(EMMYLUA_OS)-$(EMMYLUA_ARCH).tar.gz
+EMMYLUA_DIR := deps/emmylua
+EMMYLUA_BIN := $(EMMYLUA_DIR)/emmylua_check
 
-luals:
-	wget $(LUALS_URL)
-	mkdir luals
-	tar -xf $(LUALS_TARBALL) -C luals
-	rm -rf $(LUALS_TARBALL)
+.PHONY: emmylua
+emmylua: $(EMMYLUA_BIN)
 
-.PHONY: luals-check
-luals-check: luals nvim-test
-	VIMRUNTIME=$(XDG_DATA_HOME)/nvim-test/nvim-test-$(NVIM_TEST_VERSION)/share/nvim/runtime \
-		luals/bin/lua-language-server \
-			--logpath=. \
-			--configpath=../.luarc.json \
-			--check=lua
+ifeq ($(shell echo $(EMMYLUA_REF) | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$$'),$(EMMYLUA_REF))
+
+$(EMMYLUA_BIN):
+	mkdir -p $(EMMYLUA_DIR)
+	curl -L $(EMMYLUA_RELEASE_URL) -o $(EMMYLUA_RELEASE_TAR)
+	tar -xzf $(EMMYLUA_RELEASE_TAR) -C $(EMMYLUA_DIR)
+
+else
+
+$(EMMYLUA_BIN):
+	git clone --filter=blob:none https://github.com/EmmyLuaLs/emmylua-analyzer-rust.git $(EMMYLUA_DIR)
+	git -C $(EMMYLUA_DIR) checkout $(EMMYLUA_SHA)
+	cd $(EMMYLUA_DIR) && cargo build --release --package emmylua_check
+
+endif
+
+.PHONY: emmylua-check
+emmylua-check: $(EMMYLUA_BIN)
+	$(EMMYLUA_BIN) lua \
+		--config .emmyrc.json
 
 .PHONY: doc
 doc:
