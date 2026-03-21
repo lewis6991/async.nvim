@@ -246,6 +246,65 @@ stack traceback:
     end)
   end)
 
+  describe('module wrappers', function()
+    it_exec('can run the core module without vim bindings', function()
+      local ok, err = xpcall(function()
+        local chunk = assert(loadfile('lua/async/core.lua'))
+        local env = setmetatable({
+          require = require,
+          vim = false,
+        }, { __index = _G })
+
+        setfenv(chunk, env)
+
+        local async = chunk()
+        async._runtime.wait = function(timeout, predicate)
+          local start = os.clock()
+          while not predicate() do
+            if (os.clock() - start) * 1000 >= timeout then
+              return false
+            end
+          end
+          return true
+        end
+        async._runtime.schedule = function(callback)
+          callback()
+        end
+
+        local result = async
+          .run(function()
+            return async.await(function(callback)
+              callback(42)
+            end)
+          end)
+          :wait(10)
+
+        assert(result == 42)
+      end, debug.traceback)
+
+      if not ok then
+        error(err)
+      end
+    end)
+
+    it_exec('exposes a neovim wrapper without init', function()
+      package.loaded['async.nvim'] = nil
+      local async_nvim = require('async.nvim')
+
+      assert(async_nvim.init == nil)
+      assert(async_nvim._runtime == nil)
+
+      local result = async_nvim
+        .run(function()
+          async_nvim.await(vim.schedule)
+          return 'ok'
+        end)
+        :wait(10)
+
+      eq('ok', result)
+    end)
+  end)
+
   describe('task cancellation and closing', function()
     it_exec('can close tasks', function()
       local task = run(eternity)

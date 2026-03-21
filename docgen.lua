@@ -56,9 +56,6 @@ local function write_desc(file, desc)
   desc = desc:gsub('```lua', '>lua')
   desc = desc:gsub('[ ]*```', '<')
 
-  -- Remove commented lines
-  desc = desc:gsub('\n%-%-[^\n]*', '')
-
   desc = desc:gsub('%[([^]]+)%]', '|%1|')
 
   desc = desc:gsub('### ([^\n]*)', function(s)

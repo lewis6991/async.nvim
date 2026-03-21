@@ -25,7 +25,7 @@ async.init({
     -- or timeout milliseconds elapsed
     -- Returns: true if predicate became true, false if timeout
   end,
-  
+
   schedule = function(callback)
     -- Defer callback to next event loop iteration
   end

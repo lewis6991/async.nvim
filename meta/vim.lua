@@ -8,7 +8,12 @@
 ---@field new_timer fun(): vim.uv.Timer
 ---@field fs_stat fun(path: string, callback: fun(...))
 
+---@class vim.fn
+---@field mkdir fun(path: string, flags: string): integer
+
 ---@class vim
+---@field _maxint integer
+---@field fn vim.fn
 ---@field uv vim.uv
 vim = {}
 
@@ -34,6 +39,7 @@ function vim.validate(name, value, expected_type, optional) end
 
 ---@param obj any
 ---@return boolean
+---@return_cast obj function
 function vim.is_callable(obj) end
 
 ---@param value any

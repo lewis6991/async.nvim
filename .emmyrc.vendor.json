@@ -24,7 +24,6 @@
   },
   "workspace": {
     "ignoreDir": [
-      "build",
       "nvim-test"
     ],
     "library": [

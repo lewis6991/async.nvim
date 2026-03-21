@@ -45,10 +45,6 @@ vim.async.Closable.is_closing	lua-async.txt	/*vim.async.Closable.is_closing*
 vim.async.Event	lua-async.txt	/*vim.async.Event*
 vim.async.Future	lua-async.txt	/*vim.async.Future*
 vim.async.Queue	lua-async.txt	/*vim.async.Queue*
-vim.async.ReadyRuntime	lua-async.txt	/*vim.async.ReadyRuntime*
-vim.async.ReadyRuntime.new_timer	lua-async.txt	/*vim.async.ReadyRuntime.new_timer*
-vim.async.ReadyRuntime.schedule	lua-async.txt	/*vim.async.ReadyRuntime.schedule*
-vim.async.ReadyRuntime.wait	lua-async.txt	/*vim.async.ReadyRuntime.wait*
 vim.async.Runtime	lua-async.txt	/*vim.async.Runtime*
 vim.async.Runtime.new_timer	lua-async.txt	/*vim.async.Runtime.new_timer*
 vim.async.Runtime.schedule	lua-async.txt	/*vim.async.Runtime.schedule*

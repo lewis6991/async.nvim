@@ -46,7 +46,7 @@ $(STYLUA_ZIP):
 stylua: $(STYLUA_ZIP)
 	unzip $<
 
-FILES = lua/*.lua test/*.lua
+FILES = lua/*.lua test/*.lua scripts/*.lua
 
 .PHONY: format-check
 format-check: stylua
@@ -95,7 +95,17 @@ emmylua-check: $(EMMYLUA_BIN)
 .PHONY: doc
 doc:
 	emmylua_doc_cli \
-		--input lua \
 		--output . \
-		--format=json
+		--output-format=json \
+		lua
 	./docgen.lua doc.json doc/lua-async.txt
+
+.PHONY: vendor-nvim
+vendor-nvim: build/nvim/async.lua
+
+build/nvim/async.lua: stylua emmylua
+	mkdir -p build/nvim
+	nvim -l scripts/vendor_nvim.lua $@
+	./stylua build/nvim/async.lua
+	$(EMMYLUA_BIN) build/nvim/async.lua \
+		--config .emmyrc.vendor.json
