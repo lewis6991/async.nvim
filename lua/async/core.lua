@@ -283,6 +283,15 @@ local complete_marker = {}
 
 local resume_error = 'Unexpected coroutine.resume()'
 local yield_error = 'Unexpected coroutine.yield()'
+local nil_error = 'error(nil)'
+
+--- Normalize a failed Lua operation for the async error slot, where `nil`
+--- already means success.
+--- @param err any
+--- @return any
+local function normalize_error(err)
+  return err == nil and nil_error or err
+end
 
 --- Checks the arguments of a `coroutine.resume`.
 --- This is used to ensure that a resume is expected.
@@ -298,7 +307,7 @@ local function check_yield(marker, err, ...)
     -- Return an error to the caller. This will also leave the task in a dead
     -- and unfinished state
     error(resume_error, 0)
-  elseif err then
+  elseif err ~= nil then
     error(err, 0)
   end
   return ...
@@ -479,15 +488,31 @@ do --- Task
     end
   end
 
+  --- Remove this task from its parent without changing execution state.
+  --- @private
+  --- @return boolean removed
+  function Task:_detach()
+    if not self._parent then
+      return false
+    end
+
+    self._parent._children[self._parent_children_idx] = nil
+    self._parent = nil
+    self._parent_children_idx = nil
+    return true
+  end
+
   --- Detach a task from its parent.
   ---
   --- The task becomes a top-level task.
   --- @return vim.async.Task<R>
   function Task:detach()
-    if self._parent then
-      self._parent._children[self._parent_children_idx] = nil
-      self._parent = nil
-      self._parent_children_idx = nil
+    local should_start = self._parent and not self._started and not self:completed()
+    self:_detach()
+    if should_start then
+      _runtime.schedule(function()
+        self:_start()
+      end)
     end
     return self
   end
@@ -527,7 +552,7 @@ do --- Task
   --- @return vim.async.Task<R> self
   function Task:raise_on_error()
     self:on_complete(function(err)
-      if err then
+      if err ~= nil then
         error(self:traceback(err), 0)
       end
     end)
@@ -546,11 +571,11 @@ do --- Task
 
   --- Start children whose first resume was deferred by `run()`.
   ---
-  --- Deferring child start lets an immediate `await()` or `pawait()` claim the
-  --- task boundary before child code runs. Once the parent suspends or
-  --- finalizes, any remaining pending children must start so implicit waits,
-  --- cancellation, and inspection see the full task tree.
-  --- @package
+  --- Deferring child start lets `await()` or `pawait()` claim the task boundary
+  --- before child code runs. At await checkpoints and successful parent finish,
+  --- any remaining pending children must start so implicit waits, cancellation,
+  --- and inspection see the full task tree.
+  --- @private
   function Task:_start_pending_children()
     for i = 1, self._children_idx do
       local child = self._children[i]
@@ -558,6 +583,17 @@ do --- Task
         child:_start()
       end
     end
+  end
+
+  --- Keep the first task error. The error can be any non-nil Lua value.
+  --- @private
+  --- @param err any
+  --- @return any
+  function Task:_set_error(err)
+    if self._error == nil then
+      self._error = err
+    end
+    return self._error
   end
 
   --- @package
@@ -616,6 +652,24 @@ do --- Task
     self:_raise({ complete_marker, pack_len(...) })
   end
 
+  --- Record a child failure on this task and deliver it unless this task is
+  --- already collecting children during finalization.
+  --- @package
+  --- @param child vim.async.Task<any>
+  --- @param err any
+  --- @param child_was_awaited boolean?
+  function Task:_child_failed(child, err, child_was_awaited)
+    -- A parent close turns child "closed" results into cleanup, not failure.
+    if child._closing or child_was_awaited or (self._closing and err == 'closed') then
+      return
+    end
+
+    local task_err = self:_set_error('child error: ' .. tostring(err))
+    if not self._finalizing_children then
+      self:_raise(task_err)
+    end
+  end
+
   --- Checks if an object is closable, i.e., has a `close` method.
   --- @param obj any
   --- @return boolean
@@ -626,40 +680,44 @@ do --- Task
   end
 
   do -- Task:_resume()
+    --- Complete this task with an error and propagate it to the parent if the
+    --- parent did not explicitly await this task.
+    --- @param parent? vim.async.Task<any>
+    --- @param err any
+    function Task:_finish_error(parent, err)
+      if err == nil then
+        err = self._error
+      end
+      err = normalize_error(err)
+      if type(err) == 'table' and err[1] == complete_marker then
+        self._future:complete(nil, unpack_len(err[2]))
+        return
+      end
+
+      if parent then
+        parent:_child_failed(self, err, parent._awaiting == self)
+      end
+      self._future:complete(err)
+    end
+
     --- @private
     --- @param stat boolean
     --- @param ... R... result
     function Task:_finish(stat, ...)
+      if self:completed() then
+        return
+      end
+
       local parent = self._parent
-      self:detach()
+      self:_detach()
 
       threads[self._thread] = nil
 
       if not stat then
-        local err = ...
-        if type(err) == 'table' and err[1] == complete_marker then
-          self._future:complete(nil, unpack_len(err[2]))
-        else
-          local parent_awaiting = parent and parent._awaiting == self
-          local err_msg = err or 'unknown error'
-          self._future:complete(err_msg)
-          if parent and not parent_awaiting and not self._closing then
-            parent._error = parent._error or ('child error: ' .. tostring(err_msg))
-            if not parent._finalizing_children then
-              parent:_raise(parent._error)
-            end
-          end
-        end
+        self:_finish_error(parent, ...)
       else
-        if self._error then
-          local parent_awaiting = parent and parent._awaiting == self
-          self._future:complete(self._error)
-          if parent and not parent_awaiting and not self._closing then
-            parent._error = parent._error or ('child error: ' .. tostring(self._error))
-            if not parent._finalizing_children then
-              parent:_raise(parent._error)
-            end
-          end
+        if self._error ~= nil then
+          self:_finish_error(parent, self._error)
         else
           self._future:complete(nil, ...)
         end
@@ -670,41 +728,48 @@ do --- Task
     --- @param stat boolean
     --- @param ... R... result
     function Task:_finalize(stat, ...)
-      -- Starting a helper task when there are no children would recurse forever:
-      --   M.run() -> task:_resume() -> resume_co() -> complete_task() -> M.run()
-      if next(self._children) ~= nil then
-        local finish_args = pack_len(stat, ...)
-        self._finalizing_children = true
-        M.run({ _internal = true, detached = true, name = 'await_children' }, function()
-          -- TODO(lewis6991): should we collect all errors?
-          local close_children = not stat
+      if next(self._children) == nil then
+        self:_finish(stat, ...)
+        return
+      end
 
-          if not close_children then
-            self:_start_pending_children()
-          end
+      local finish_args = pack_len(stat, ...)
+      self._finalizing_children = true
+      -- Only spawn the helper after the no-child path; an empty helper task
+      -- would otherwise finalize by recursively spawning another helper.
+      M.run({ _internal = true, detached = true, name = 'await_children' }, function()
+        -- TODO(lewis6991): should we collect all errors?
+        local close_remaining = not stat
 
-          for i = 1, self._children_idx do
-            local child = self._children[i]
-            if child then
-              if close_children then
-                child:close()
-              end
-              -- Finalization owns child failures here; don't let them re-enter
-              -- the dead parent coroutine and complete the future twice.
-              local ok, err = pcall(M.await, child)
-              if not ok and not child._closing then
-                self._error = self._error or ('child error: ' .. tostring(err))
-                close_children = true
-              end
+        if not close_remaining then
+          self:_start_pending_children()
+        end
+
+        for i = 1, self._children_idx do
+          local child = self._children[i]
+          if child then
+            if close_remaining then
+              child:close()
+            end
+            -- Finalization owns child failures here; don't let them re-enter
+            -- the dead parent coroutine and complete the future twice.
+            local ok, err = pcall(M.await, child)
+            -- A close can arrive while normal finalization is awaiting
+            -- children; from that point child errors are cleanup results.
+            if not close_remaining and not self._closing and not ok and not child._closing then
+              self:_set_error('child error: ' .. tostring(err))
+              close_remaining = true
             end
           end
+        end
 
-          self._finalizing_children = false
+        self._finalizing_children = false
+        if stat and self._closing and self._error == nil then
+          self:_finish(false, 'closed')
+        else
           self:_finish(unpack_len(finish_args))
-        end)
-      else
-        self:_finish(stat, ...)
-      end
+        end
+      end)
     end
 
     --- @param thread thread
@@ -742,6 +807,8 @@ do --- Task
         end
         settled = true
 
+        -- If the callback runs before pcall() returns, keep looping in the
+        -- current stack. Otherwise the callback resumes the task later.
         if ok == nil then
           next_args = pack_len(...)
         else
@@ -750,7 +817,7 @@ do --- Task
       end)
 
       if not ok then
-        return pack_len(closable_or_err)
+        return pack_len(normalize_error(closable_or_err))
       elseif is_closable(closable_or_err) then
         return next_args, closable_or_err
       else
@@ -813,7 +880,7 @@ do --- Task
       end
 
       -- Close failed (synchronously) raise error
-      return false, pack_len(close_err)
+      return false, pack_len(normalize_error(close_err))
     end
 
     --- @package
@@ -850,7 +917,7 @@ do --- Task
         local awaitable = handle_co_resume(self._thread, function(stat2, ...)
           -- If pcall swallowed a child error or close signal, don't let a
           -- later normal return overwrite the pending task failure.
-          if self._error and stat2 then
+          if self._error ~= nil and stat2 then
             self:_finalize(false, self._error)
           elseif self._closing and stat2 then
             self:_finalize(false, 'closed')
@@ -865,7 +932,7 @@ do --- Task
 
         args, self._awaiting = handle_awaitable(awaitable, function(awaiting, ...)
           if is_task(awaiting) and select(1, ...) ~= nil then
-            self._error = self._error or select(1, ...)
+            self:_set_error(select(1, ...))
           end
           if not self:completed() then
             self:_resume(...)
@@ -877,7 +944,7 @@ do --- Task
         end
         self:_start_pending_children()
         if args and is_task(self._awaiting) and args[1] ~= nil then
-          self._error = self._error or args[1]
+          self:_set_error(args[1])
         end
       end
     end
@@ -939,11 +1006,12 @@ do --- M.run
       task._caller = ('%s:%d'):format(info.source, info.currentline)
     end
 
-    if task._parent then
-      _runtime.schedule(function()
-        task:_start()
-      end)
-    else
+    -- Top-level and detached tasks have no parent to start them, so they start
+    -- immediately. Attached children start when their parent next reaches an
+    -- await checkpoint, or when the parent finishes successfully and implicitly
+    -- waits for its children. If the parent errors or closes, pending children
+    -- are closed without running user code.
+    if not task._parent then
       task:_start()
     end
 
@@ -956,8 +1024,8 @@ do --- M.run
   --- of the function.
   ---
   --- Child tasks created from inside another task are attached immediately, but
-  --- their first resume is deferred until the parent awaits them, suspends, or
-  --- exits.
+  --- their first resume is deferred until an await checkpoint or successful
+  --- parent finish.
   ---
   --- Examples:
   --- ```lua
@@ -1017,7 +1085,7 @@ do --- M.await()
 
     if task._closing then
       error('closed', 0)
-    elseif task._error then
+    elseif task._error ~= nil then
       error(task._error, 0)
     end
 
@@ -1142,7 +1210,7 @@ do --- M.await()
         if err ~= nil then
           if current._closing then
             callback('closed')
-          elseif current._error then
+          elseif current._error ~= nil then
             callback(current._error)
           else
             callback(nil, false, err)
@@ -1247,11 +1315,11 @@ do --- M.iter(), M.await_all(), M.await_any()
       local r = queue:get()
       if r then
         local err = r[1]
-        if err then
+        if err ~= nil then
           -- -- Note: if the task was a child, then an error should have already been
           -- -- raised in _complete_task(). This should only trigger to detached tasks.
           -- assert(assert(tasks[r[2]])._parent == nil)
-          error(('iter error[index:%d]: %s'):format(r[2], r[1]), 3)
+          error(('iter error[index:%d]: %s'):format(r[2], tostring(err)), 3)
         end
         return unpack_len(r, 2)
       end
@@ -1455,7 +1523,7 @@ do --- M._future()
   --- Return `true` if the Future is completed.
   --- @return boolean
   function Future:completed()
-    return (self._err or self._result) ~= nil
+    return self._err ~= nil or self._result ~= nil
   end
 
   --- Return the result of the Future.
@@ -1471,7 +1539,7 @@ do --- M._future()
     if not self:completed() then
       error('Future has not completed', 2)
     end
-    if self._err then
+    if self._err ~= nil then
       return false, self._err
     else
       return true, unpack_len(self._result)
@@ -1502,10 +1570,16 @@ do --- M._future()
   --- If an error is provided, the Future is marked as failed. Otherwise, it is
   --- marked as successful with the provided result.
   ---
+  --- A Future can only be completed once.
+  ---
   --- This will trigger any callbacks that are waiting on the Future.
   --- @param err? any
   --- @param ... any result
   function Future:complete(err, ...)
+    if self:completed() then
+      error('Future is already completed', 2)
+    end
+
     if err ~= nil then
       self._err = err
     else
@@ -1517,7 +1591,7 @@ do --- M._future()
     for _, cb in pairs(self._callbacks) do
       local ok, cb_err = pcall(cb, err, ...)
       if not ok then
-        errs[#errs + 1] = cb_err
+        errs[#errs + 1] = tostring(normalize_error(cb_err))
       end
     end
 

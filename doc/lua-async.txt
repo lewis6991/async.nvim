@@ -237,8 +237,8 @@ vim.async.run({func}, {...})                                     *async.run()*
     of the function.
 
     Child tasks created from inside another task are attached immediately, but
-    their first resume is deferred until the parent awaits them, suspends, or
-    exits.
+    their first resume is deferred until an await checkpoint or successful
+    parent finish.
 
     Examples:
     >lua
@@ -726,6 +726,8 @@ vim.async.Future:complete({err}, {...})              *async.Future:complete()*
 
     If an error is provided, the Future is marked as failed. Otherwise, it is
     marked as successful with the provided result.
+
+    A Future can only be completed once.
 
     This will trigger any callbacks that are waiting on the Future.
 

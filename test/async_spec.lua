@@ -199,6 +199,26 @@ describe('async', function()
       }, results)
     end)
 
+    it_exec('child tasks start when the parent reaches a checkpoint', function()
+      local results = {}
+
+      run(function()
+        run(function()
+          results[#results + 1] = 'child_started'
+        end)
+
+        results[#results + 1] = 'before_checkpoint'
+        await(vim.schedule)
+        results[#results + 1] = 'after_checkpoint'
+      end):wait(100)
+
+      eq({
+        'before_checkpoint',
+        'child_started',
+        'after_checkpoint',
+      }, results)
+    end)
+
     it_exec('handles tasks that complete', function()
       local task = run(function()
         -- should wait for 1 ms
@@ -540,6 +560,20 @@ stack traceback:
       }, results)
     end)
 
+    it_exec('treats false task errors as errors when iterating', function()
+      local task = run(function()
+        await(vim.schedule)
+        error(false, 0)
+      end)
+
+      local parent = run(function()
+        for _ in Async.iter({ task }) do
+        end
+      end)
+
+      check_task_err(parent, 'iter error%[index:1%]: false')
+    end)
+
     it_exec('can handle errors when iterating child tasks', function()
       local results = {} --- @type table[]
       local tasks = {} --- @type vim.async.Task<any>[]
@@ -683,6 +717,24 @@ stack traceback:
       t1:wait()
       check_task_err(t2, 'closed')
       t3:wait()
+    end)
+
+    it_exec('detached pending child starts independently', function()
+      local results = {}
+
+      run(function()
+        run(function()
+          results[#results + 1] = 'detached_started'
+        end):detach()
+
+        results[#results + 1] = 'parent_done'
+        await(vim.schedule)
+      end):wait(100)
+
+      eq({
+        'parent_done',
+        'detached_started',
+      }, results)
     end)
 
     it_exec('does not wait for detached task children after sync wait times out', function()
@@ -1122,6 +1174,35 @@ parent@test/async_spec.lua:%d+ %[awaiting%]
         'returned',
       }, results)
     end)
+
+    it_exec(
+      'false awaited child errors remain terminal after raw pcall catches delivery',
+      function()
+        local parent = run(function()
+          local child = run(function()
+            error(false, 0)
+          end)
+
+          local ok1, err1 = pcall(function()
+            await(child)
+          end)
+
+          eq(false, ok1)
+          eq(false, err1)
+
+          local ok2, err2 = pcall(function()
+            Async.sleep(1)
+          end)
+
+          eq(false, ok2)
+          eq(false, err2)
+        end)
+
+        local ok, err = parent:pwait(200)
+        eq(false, ok)
+        eq(false, err)
+      end
+    )
 
     it_exec('pawait returns successful task results', function()
       local parent = run(function()
@@ -1611,6 +1692,83 @@ parent@test/async_spec.lua:%d+ %[awaiting%]
       assert(err:match('child error:.*CHILD_ERROR'), 'Expected child error, got: ' .. tostring(err))
       eq(1, completions)
       check_task_err(sibling, 'closed')
+    end)
+
+    it_exec('future complete is one-shot', function()
+      local future = Async._future()
+      future:complete(nil, 'first')
+
+      local ok, err = pcall(function()
+        future:complete(nil, 'second')
+      end)
+
+      eq(false, ok)
+      --- @cast err string
+      assert(err:match('Future is already completed'), 'Unexpected error: ' .. tostring(err))
+
+      local stat, result = future:result()
+      eq(true, stat)
+      eq('first', result)
+    end)
+
+    it_exec('future false error still completes', function()
+      local future = Async._future()
+      future:complete(false)
+
+      eq(true, future:completed())
+
+      local stat, err = future:result()
+      eq(false, stat)
+      eq(false, err)
+    end)
+
+    it_exec('normalizes nil task errors', function()
+      check_task_err(
+        run(function()
+          error()
+        end),
+        'error%(nil%)'
+      )
+    end)
+
+    it_exec('normalizes nil awaitable setup errors', function()
+      local task = run(function()
+        await(function()
+          error()
+        end)
+      end)
+
+      check_task_err(task, 'error%(nil%)')
+    end)
+
+    it_exec('normalizes nil close errors', function()
+      local task = run(function()
+        await(function()
+          return {
+            close = function()
+              error()
+            end,
+          }
+        end)
+      end)
+
+      task:close()
+      check_task_err(task, 'error%(nil%)')
+    end)
+
+    it_exec('normalizes nil future callback errors', function()
+      local future = Async._future()
+      future:wait(function()
+        error()
+      end)
+
+      local ok, err = pcall(function()
+        future:complete(nil, 'value')
+      end)
+
+      eq(false, ok)
+      --- @cast err string
+      assert(err:match('error%(nil%)'), 'Unexpected error: ' .. tostring(err))
     end)
 
     it_exec('callback called multiple times is handled gracefully', function()
