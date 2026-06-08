@@ -56,7 +56,7 @@ format-check: stylua
 format: stylua
 	./stylua $(FILES)
 
-EMMYLUA_REF := 0.21.0
+EMMYLUA_REF := 0.23.2
 EMMYLUA_OS ?= $(shell uname -s | tr '[:upper:]' '[:lower:]')
 ifneq ($(filter $(shell uname -m),x86_64 amd64),)
   EMMYLUA_ARCH := x64

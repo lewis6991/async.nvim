@@ -56,12 +56,12 @@ function M.join_n_2(max_jobs, funs)
         finish()
       elseif #remaining > 0 then
         local next_task = table.remove(remaining)
-        async.run(next_task):wait(cb)
+        async.run(next_task):on_complete(cb)
       end
     end
 
     for i = 1, max_jobs do
-      async.run(assert(funs[i])):wait(cb)
+      async.run(assert(funs[i])):on_complete(cb)
     end
   end)
 end

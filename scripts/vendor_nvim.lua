@@ -153,8 +153,13 @@ local function transform(core_source, util_source)
     '--- This module implements an asynchronous programming library for Lua,\n',
     '--- Weak table to keep track of running tasks\n'
   )
+  local init_block = extract_block(
+    core_source,
+    '--- Initialize async runtime for non-Neovim environments.\n',
+    '--- Weak table to keep track of running tasks\n'
+  )
 
-  local vendored_module_block = replace_once_plain(module_block, 'M._runtime = _runtime\n', '')
+  local vendored_module_block = replace_once_plain(module_block, init_block, '')
 
   local preamble = table.concat({
     vendored_module_block,
@@ -169,7 +174,7 @@ local function transform(core_source, util_source)
 
   output = strip_block(output, '--- @class vim.async.Runtime\n', 'local _runtime = {}\n', '')
 
-  output = replace_once_plain(output, 'M._runtime = _runtime\n', '')
+  output = replace_once_plain(output, init_block, '')
   output = replace_once_plain(output, vendored_module_block, '')
 
   output = replace_once_plain(output, type_block, preamble)

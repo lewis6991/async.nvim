@@ -13,6 +13,11 @@ local unpack_len = util.unpack_len
 
 --- @alias vim.async.TimerFactory fun(): vim.async.Timer
 
+--- @class vim.async.InitOpts
+--- @field wait fun(timeout: integer, predicate: fun(): boolean): boolean Run the event loop until the predicate succeeds or the timeout expires.
+--- @field schedule fun(callback: fun()) Run a callback on the next event loop turn.
+--- @field new_timer? vim.async.TimerFactory Create libuv-compatible timers for `sleep()` and `timeout()`.
+
 --- @class vim.async.Runtime
 --- @field wait fun(timeout: integer, predicate: fun(): boolean): boolean
 --- @field schedule fun(callback: fun())
@@ -230,10 +235,35 @@ local _runtime = {}
 ---
 --- @class vim.async
 local M = {}
-M._runtime = _runtime
+
+--- Initialize async runtime for non-Neovim environments.
+---
+--- In Neovim, initialization happens automatically. Only call this if you're
+--- using the library outside of Neovim or you want to override the detected
+--- runtime bindings.
+---
+--- `opts.wait(timeout, predicate)` must run the event loop until `predicate`
+--- returns true or the timeout expires. `opts.schedule(callback)` must defer a
+--- callback to the next event loop turn. `opts.new_timer()` is only required
+--- for timer APIs such as `sleep()` and `timeout()`.
+---
+--- @param opts vim.async.InitOpts
+function M.init(opts)
+  validate('opts', opts, 'table')
+  validate('opts.wait', opts.wait, 'callable')
+  validate('opts.schedule', opts.schedule, 'callable')
+
+  if opts.new_timer ~= nil then
+    validate('opts.new_timer', opts.new_timer, 'callable')
+  end
+
+  _runtime.wait = opts.wait
+  _runtime.schedule = opts.schedule
+  _runtime.new_timer = opts.new_timer
+end
 
 --- Weak table to keep track of running tasks
---- @type table<thread,vim.async.Task<any>?>
+--- @type table<thread, vim.async.Task<any>?>
 local threads = setmetatable({}, { __mode = 'k' })
 
 --- Returns the currently running task.
@@ -293,6 +323,9 @@ end
 --- @field package _thread thread
 --- @field package _future vim.async.Future<R>
 --- @field package _closing boolean
+--- @field package _error? any
+--- @field package _finalizing_children boolean
+--- @field package _started boolean
 ---
 --- Reference to parent to handle attaching/detaching.
 --- @field package _parent? vim.async.Task<any>
@@ -316,19 +349,30 @@ end
 --- Tasks can await other async functions (task of callback functions)
 --- when we are waiting on a child, we store the handle to it here so we can
 --- close it.
---- @field package _awaiting? vim.async.Task|vim.async.Closable
+--- @field package _awaiting? vim.async.Task<any> | vim.async.Closable
 local Task = {}
+
+--- @return_cast x vim.async.Task<any>
+local function is_task(x)
+  return getmetatable(x) == Task
+end
 
 do --- Task
   Task.__index = Task
+
   --- @package
   --- @param func function
   --- @param opts? vim.async.run.Opts
-  --- @return vim.async.Task
-  function Task._new(func, opts)
-    local thread = coroutine.create(function(marker, ...)
-      check_yield(marker)
-      return func(...)
+  --- @return vim.async.Task<any>
+  function Task._new(func, opts, ...)
+    local func_args = pack_len(...) --[[@as any[]? ]]
+    local thread = coroutine.create(function(marker, err)
+      -- Drop the packed vararg table before user code can suspend; otherwise
+      -- the coroutine closure retains it for the task lifetime.
+      local args = func_args
+      func_args = nil
+      check_yield(marker, err)
+      return func(unpack_len(args))
     end)
 
     opts = opts or {}
@@ -337,6 +381,8 @@ do --- Task
       name = opts.name,
       _internal = opts._internal,
       _closing = false,
+      _finalizing_children = false,
+      _started = false,
       _is_completing = false,
       _thread = thread,
       _future = M._future(),
@@ -367,40 +413,35 @@ do --- Task
 
   --- Add a callback to be run when the Task has completed.
   ---
-  --- - If a timeout or `nil` is provided, the Task will synchronously wait for the
-  ---   task to complete for the given time in milliseconds.
-  ---
-  ---   ```lua
-  ---   local result = task:wait(10) -- wait for 10ms or else error
-  ---
-  ---   local result = task:wait() -- wait indefinitely
-  ---   ```
-  ---
-  --- - If a function is provided, it will be called when the Task has completed
-  ---   with the arguments:
-  ---   - (`err: string`) - if the Task completed with an error.
-  ---   - (`nil`, `...:any`) - the results of the Task if it completed successfully.
-  ---
-  ---
   --- If the Task is already done when this method is called, the callback is
   --- called immediately with the results.
-  --- @param callback_or_timeout integer|fun(err?: any, ...: R...)?
-  --- @overload fun(timeout?: integer): R...
-  function Task:wait(callback_or_timeout)
-    if is_callable(callback_or_timeout) then
-      --- @cast callback_or_timeout fun(err?: any, ...: R...)
-      self._future:wait(callback_or_timeout)
-      return
-    end
+  ---
+  --- This only observes completion. It does not start a pending task.
+  --- @param callback fun(err?: any, ...: R...)
+  function Task:on_complete(callback)
+    validate('callback', callback, 'callable')
+    self._future:wait(callback)
+  end
 
-    --- @cast callback_or_timeout integer?
-    local wait = _runtime.wait
+  --- Synchronously wait for the Task to complete.
+  ---
+  --- If a timeout is provided, waits for the given time in milliseconds before
+  --- failing with `"timeout"`. With no timeout, waits indefinitely.
+  ---
+  --- ```lua
+  --- local result = task:wait(10) -- wait for 10ms or else error
+  ---
+  --- local result = task:wait() -- wait indefinitely
+  --- ```
+  --- @param timeout integer?
+  --- @return R...
+  function Task:wait(timeout)
+    validate('timeout', timeout, 'number', true)
+    self:_start()
 
-    if
-      not wait(callback_or_timeout or _maxint, function()
-        return self:completed()
-      end)
-    then
+    if not _runtime.wait(timeout or _maxint, function()
+      return self:completed()
+    end) then
       error('timeout', 2)
     end
     local res = pack_len(self._future:result())
@@ -416,8 +457,7 @@ do --- Task
 
   --- Protected-call version of `wait()`.
   ---
-  --- Does not throw an error if the task fails or times out. Instead, returns
-  --- the status and the results.
+  --- Equivalent to `pcall(task.wait, task, timeout)`.
   --- @param timeout integer?
   --- @return boolean, R...
   function Task:pwait(timeout)
@@ -426,7 +466,7 @@ do --- Task
   end
 
   --- @package
-  --- @param parent? vim.async.Task
+  --- @param parent? vim.async.Task<any>
   function Task:_attach(parent)
     if parent then
       -- Attach to parent
@@ -442,7 +482,7 @@ do --- Task
   --- Detach a task from its parent.
   ---
   --- The task becomes a top-level task.
-  --- @return vim.async.Task
+  --- @return vim.async.Task<R>
   function Task:detach()
     if self._parent then
       self._parent._children[self._parent_children_idx] = nil
@@ -464,12 +504,11 @@ do --- Task
     local thread = ('[%s] '):format(self._thread)
 
     local awaiting = self._awaiting
-    if getmetatable(awaiting) == Task then
-      --- @cast awaiting vim.async.Task
+    if is_task(awaiting) then
       msg = awaiting:traceback(msg, level + 1)
     end
 
-    local tblvl = getmetatable(awaiting) == Task and 2 or nil
+    local tblvl = is_task(awaiting) and 2 or nil
     msg = (tostring(msg) or '')
       .. debug.traceback(self._thread, '', tblvl):gsub('\n\t', '\n\t' .. thread)
 
@@ -485,9 +524,9 @@ do --- Task
   end
 
   --- If a task completes with an error, raise the error
-  --- @return vim.async.Task self
+  --- @return vim.async.Task<R> self
   function Task:raise_on_error()
-    self:wait(function(err)
+    self:on_complete(function(err)
       if err then
         error(self:traceback(err), 0)
       end
@@ -496,17 +535,43 @@ do --- Task
   end
 
   --- @package
+  function Task:_start()
+    if self._started or self:completed() then
+      return
+    end
+
+    self._started = true
+    self:_resume()
+  end
+
+  --- Start children whose first resume was deferred by `run()`.
+  ---
+  --- Deferring child start lets an immediate `await()` or `pawait()` claim the
+  --- task boundary before child code runs. Once the parent suspends or
+  --- finalizes, any remaining pending children must start so implicit waits,
+  --- cancellation, and inspection see the full task tree.
+  --- @package
+  function Task:_start_pending_children()
+    for i = 1, self._children_idx do
+      local child = self._children[i]
+      if child then
+        child:_start()
+      end
+    end
+  end
+
+  --- @package
   --- @param err any
   function Task:_raise(err)
     if self:status() == 'running' then
-      local schedule = _runtime.schedule
-      -- TODO(lewis6991): is there a better way to do this?
-      schedule(function()
-        --- @diagnostic disable-next-line: await-in-sync
-        self:_resume(err)
+      -- A running coroutine cannot be resumed recursively, so deliver the
+      -- error on the next event-loop turn after the current stack unwinds.
+      _runtime.schedule(function()
+        if not self:completed() then
+          self:_resume(err)
+        end
       end)
     else
-      --- @diagnostic disable-next-line: await-in-sync
       self:_resume(err)
     end
   end
@@ -522,7 +587,7 @@ do --- Task
       self:_raise('closed')
     end
     if callback then
-      self:wait(function()
+      self:on_complete(function()
         callback()
       end)
     end
@@ -562,20 +627,9 @@ do --- Task
 
   do -- Task:_resume()
     --- @private
-    --- @async
     --- @param stat boolean
-    --- @param ...R... result
-    function Task:_finalize0(stat, ...)
-      -- TODO(lewis6991): should we collect all errors?
-      for _, child in pairs(self._children) do
-        if not stat then
-          child:close()
-        end
-        -- If child fails then it will resume the parent with an error
-        -- which is handled below
-        pcall(M.await, child)
-      end
-
+    --- @param ... R... result
+    function Task:_finish(stat, ...)
       local parent = self._parent
       self:detach()
 
@@ -586,38 +640,77 @@ do --- Task
         if type(err) == 'table' and err[1] == complete_marker then
           self._future:complete(nil, unpack_len(err[2]))
         else
+          local parent_awaiting = parent and parent._awaiting == self
           local err_msg = err or 'unknown error'
           self._future:complete(err_msg)
-          if parent and not self._closing then
-            parent:_raise('child error: ' .. tostring(err_msg))
+          if parent and not parent_awaiting and not self._closing then
+            parent._error = parent._error or ('child error: ' .. tostring(err_msg))
+            if not parent._finalizing_children then
+              parent:_raise(parent._error)
+            end
           end
         end
       else
-        self._future:complete(nil, ...)
+        if self._error then
+          local parent_awaiting = parent and parent._awaiting == self
+          self._future:complete(self._error)
+          if parent and not parent_awaiting and not self._closing then
+            parent._error = parent._error or ('child error: ' .. tostring(self._error))
+            if not parent._finalizing_children then
+              parent:_raise(parent._error)
+            end
+          end
+        else
+          self._future:complete(nil, ...)
+        end
       end
     end
 
     --- @private
-    --- @async
-    --- Should only be called in Task:_resume_co()
     --- @param stat boolean
-    --- @param ...R... result
+    --- @param ... R... result
     function Task:_finalize(stat, ...)
-      -- Only run self._finalize0() directly if there are children, otherwise
-      -- this will cause infinite recursion:
+      -- Starting a helper task when there are no children would recurse forever:
       --   M.run() -> task:_resume() -> resume_co() -> complete_task() -> M.run()
       if next(self._children) ~= nil then
-        -- TODO(lewis6991): should this be detached?
-        M.run({ _internal = true, name = 'await_children' }, self._finalize0, self, stat, ...)
+        local finish_args = pack_len(stat, ...)
+        self._finalizing_children = true
+        M.run({ _internal = true, detached = true, name = 'await_children' }, function()
+          -- TODO(lewis6991): should we collect all errors?
+          local close_children = not stat
+
+          if not close_children then
+            self:_start_pending_children()
+          end
+
+          for i = 1, self._children_idx do
+            local child = self._children[i]
+            if child then
+              if close_children then
+                child:close()
+              end
+              -- Finalization owns child failures here; don't let them re-enter
+              -- the dead parent coroutine and complete the future twice.
+              local ok, err = pcall(M.await, child)
+              if not ok and not child._closing then
+                self._error = self._error or ('child error: ' .. tostring(err))
+                close_children = true
+              end
+            end
+          end
+
+          self._finalizing_children = false
+          self:_finish(unpack_len(finish_args))
+        end)
       else
-        self:_finalize0(stat, ...)
+        self:_finish(stat, ...)
       end
     end
 
     --- @param thread thread
-    --- @param on_finish fun(stat: boolean, ...:any)
+    --- @param on_finish fun(stat: boolean, ...: any)
     --- @param stat boolean
-    --- @return fun(callback: fun(...:any...): vim.async.Closable?)?
+    --- @return fun(callback: fun(...: any...): vim.async.Closable?)?
     local function handle_co_resume(thread, on_finish, stat, ...)
       if coroutine.status(thread) == 'dead' then
         on_finish(stat, ...)
@@ -634,8 +727,8 @@ do --- Task
       return fn
     end
 
-    --- @param awaitable fun(callback: fun(...:any...): vim.async.Closable?)
-    --- @param on_defer fun(err?:any, ...:any)
+    --- @param awaitable fun(callback: fun(...: any...): vim.async.Closable?)
+    --- @param on_defer fun(awaiting: any, err?: any, ...: any)
     --- @return any[]? next_args
     --- @return vim.async.Closable? closable
     local function handle_awaitable(awaitable, on_defer)
@@ -652,7 +745,7 @@ do --- Task
         if ok == nil then
           next_args = pack_len(...)
         else
-          on_defer(...)
+          on_defer(closable_or_err, ...)
         end
       end)
 
@@ -665,11 +758,11 @@ do --- Task
       end
     end
 
-    --- @param task vim.async.Task
-    --- @param awaiting vim.async.Task|vim.async.Closable
+    --- @param task vim.async.Task<any>
+    --- @param awaiting vim.async.Task<any> | vim.async.Closable
     --- @return boolean
     local function can_close_awaiting(task, awaiting)
-      if getmetatable(awaiting) ~= Task then
+      if not is_task(awaiting) then
         return true
       end
 
@@ -683,7 +776,7 @@ do --- Task
     end
 
     --- Handle closing an awaitable if needed
-    --- @param task vim.async.Task
+    --- @param task vim.async.Task<any>
     --- @param awaiting vim.async.Closable?
     --- @param on_continue fun()
     --- @return boolean should_return
@@ -724,23 +817,19 @@ do --- Task
     end
 
     --- @package
-    --- @async
     --- @param ... any the first argument is the error, except for when the coroutine begins
     function Task:_resume(...)
-      --- @type {[integer]: any, n: integer}?
+      --- @type { [integer]: any, n: integer }?
       local args = pack_len(...)
 
       -- Run this block in a while loop to run non-deferred continuations
       -- without a new stack frame.
       while args do
-        -- TODO(lewis6991): Add a test that handles awaiting in the non-deferred
-        -- continuation
-        if self._is_completing and select(1, ...) == 'closed' then
+        if self._is_completing and args[1] == 'closed' then
           return
         end
 
         local should_return, close_err_args = handle_close_awaiting(self, self._awaiting, function()
-          --- @diagnostic disable-next-line: await-in-sync
           self:_resume(unpack_len(args))
         end)
         if should_return then
@@ -754,20 +843,18 @@ do --- Task
           -- Can only happen if coroutine.resume() is called outside of this
           -- function. When that happens check_yield() will error the coroutine
           -- which puts it in the 'dead' state.
-          self:_finalize(false, (...))
+          self:_finalize(false, unpack_len(args))
           return
         end
 
-        -- Level-triggered cancellation: if the task is closing and the coroutine
-        -- completed successfully (e.g., after pcall caught the cancellation and
-        -- then did another await), override the success with "closed" error.
-        -- This ensures cancellations persist across pcall catches.
         local awaitable = handle_co_resume(self._thread, function(stat2, ...)
-          if self._closing and stat2 then
-            --- @diagnostic disable-next-line: await-in-sync
+          -- If pcall swallowed a child error or close signal, don't let a
+          -- later normal return overwrite the pending task failure.
+          if self._error and stat2 then
+            self:_finalize(false, self._error)
+          elseif self._closing and stat2 then
             self:_finalize(false, 'closed')
           else
-            --- @diagnostic disable-next-line: await-in-sync
             self:_finalize(stat2, ...)
           end
         end, coroutine.resume(self._thread, resume_marker, unpack_len(args)))
@@ -776,12 +863,22 @@ do --- Task
           return
         end
 
-        args, self._awaiting = handle_awaitable(awaitable, function(...)
+        args, self._awaiting = handle_awaitable(awaitable, function(awaiting, ...)
+          if is_task(awaiting) and select(1, ...) ~= nil then
+            self._error = self._error or select(1, ...)
+          end
           if not self:completed() then
-            --- @diagnostic disable-next-line: await-in-sync
             self:_resume(...)
           end
         end)
+
+        if is_task(self._awaiting) then
+          self._awaiting:_start()
+        end
+        self:_start_pending_children()
+        if args and is_task(self._awaiting) and args[1] ~= nil then
+          self._error = self._error or args[1]
+        end
       end
     end
   end
@@ -798,11 +895,15 @@ do --- Task
   --- - 'awaiting'   : if the task is awaiting another task either directly via
   ---                  `await()` or waiting for all children to complete.
   --- - 'completed'  : task and all it's children have completed
-  --- @return 'running'|'awaiting'|'normal'|'scheduled'|'completed'
+  --- @return 'running' | 'awaiting' | 'normal' | 'scheduled' | 'completed'
   function Task:status()
+    if self:completed() then
+      return 'completed'
+    end
+
     local co_status = coroutine.status(self._thread)
     if co_status == 'dead' then
-      return self:completed() and 'completed' or 'awaiting'
+      return 'awaiting'
     elseif co_status == 'suspended' then
       return 'awaiting'
     elseif co_status == 'normal' then
@@ -823,23 +924,29 @@ do --- M.run
   --- @field detached? boolean
   --- @field package _internal? boolean
 
-  --- @package
   --- @generic T, R
   --- @param opts? vim.async.run.Opts
-  --- @param func async fun(...:T...): R... Function to run in an async context
+  --- @param func async fun(...: T...): R... Function to run in an async context
   --- @param ... T... Arguments to pass to the function
   --- @return vim.async.Task<R...>
   local function run(opts, func, ...)
     validate('opts', opts, 'table', true)
     validate('func', func, 'callable')
     -- TODO(lewis6991): add task names
-    local task = Task._new(func, opts)
+    local task = Task._new(func, opts, ...)
     local info = debug.getinfo(2, 'Sl')
     if info and info.currentline then
       task._caller = ('%s:%d'):format(info.source, info.currentline)
     end
-    --- @diagnostic disable-next-line: await-in-sync
-    task:_resume(...)
+
+    if task._parent then
+      _runtime.schedule(function()
+        task:_start()
+      end)
+    else
+      task:_start()
+    end
+
     return task
   end
 
@@ -847,6 +954,10 @@ do --- M.run
   ---
   --- Returns an [vim.async.Task] object which can be used to wait or await the result
   --- of the function.
+  ---
+  --- Child tasks created from inside another task are attached immediately, but
+  --- their first resume is deferred until the parent awaits them, suspends, or
+  --- exits.
   ---
   --- Examples:
   --- ```lua
@@ -859,10 +970,10 @@ do --- M.run
   --- local stat = vim.fs_stat('foo.txt')
   --- ```
   --- @generic T, R
-  --- @param func async fun(...:T...): R...
+  --- @param func async fun(...: T...): R...
   --- @return vim.async.Task<R...>
-  --- @overload fun(name: string, func: async fun(...:T...), ...: T...): vim.async.Task<R...>
-  --- @overload fun(opts: vim.async.run.Opts, func: async fun(...:T...), ...: T...): vim.async.Task<R...>
+  --- @overload fun(name: string, func: async fun(...: T...), ...: T...): vim.async.Task<R...>
+  --- @overload fun(opts: vim.async.run.Opts, func: async fun(...: T...), ...: T...): vim.async.Task<R...>
   function M.run(func, ...)
     if type(func) == 'string' then
       return run({ name = func }, ...)
@@ -884,7 +995,7 @@ do --- M.await()
   local function norm_cb_fun(argc, fun, ...)
     local args = pack_len(...)
 
-    --- @param callback fun(...:any)
+    --- @param callback fun(...: any)
     --- @return any?
     return function(callback)
       args[argc] = function(...)
@@ -892,6 +1003,50 @@ do --- M.await()
       end
       args.n = math.max(args.n, argc)
       return fun(unpack_len(args))
+    end
+  end
+
+  --- Get the current task, failing before we yield if it is closing or failed.
+  ---
+  --- This check sits outside `to_awaitable()` because `pawait()` may wrap the
+  --- awaited operation's result, but it must not wrap cancellation or a child
+  --- error that is already pending on the parent task.
+  --- @return vim.async.Task<any>
+  local function check_current_task()
+    local task = assert(running(), 'Not in async context')
+
+    if task._closing then
+      error('closed', 0)
+    elseif task._error then
+      error(task._error, 0)
+    end
+
+    return task
+  end
+
+  --- Convert the public await forms into the shape consumed by `_resume()`.
+  ---
+  --- The scheduler expects an awaitable to call `callback(err, ...)` and may use
+  --- its returned closable for cancellation cleanup. Callback-style APIs do not
+  --- have an error slot, so `norm_cb_fun()` inserts `nil`; task futures already
+  --- use this convention.
+  --- @param ... any
+  --- @return fun(callback: fun(err?: any, ...: any)): vim.async.Closable?
+  local function to_awaitable(...)
+    local arg1 = select(1, ...)
+
+    if type(arg1) == 'number' then
+      return norm_cb_fun(...)
+    elseif type(arg1) == 'function' then
+      return norm_cb_fun(1, arg1)
+    elseif is_task(arg1) then
+      --- @param callback fun(err?: any, ...: any)
+      return function(callback)
+        arg1._future:wait(callback)
+        return arg1
+      end
+    else
+      error('Invalid arguments, expected Task or (argc, func) got: ' .. tostring(arg1), 2)
     end
   end
 
@@ -923,41 +1078,83 @@ do --- M.await()
   ---
   --- end)
   --- ```
+  ---
+  --- Do not use raw `pcall` to recover from `await()` or any function that may
+  --- suspend. Child task failures and cancellation are delivered through Lua
+  --- errors too, so `pcall` cannot tell them apart from ordinary local failures.
+  --- Catch only synchronous work, use `pcall` only for cleanup before rethrowing,
+  --- or handle async failures at task boundaries.
   --- @async
   --- @generic T, R
   --- @param ... any see overloads
-  --- @overload async fun(func: (fun(callback: fun(...:R...)): vim.async.Closable?)): R...
-  --- @overload async fun(argc: integer, func: (fun(...:T..., callback: fun(...:R...)): vim.async.Closable?), ...:T...): R...
+  --- @overload async fun(func: (fun(callback: fun(...: R...)): vim.async.Closable?)): R...
+  --- @overload async fun(argc: integer, func: (fun(...: T..., callback: fun(...: R...)): vim.async.Closable?), ...: T...): R...
   --- @overload async fun(task: vim.async.Task<R>): R...
   --- @return R...
   function M.await(...)
-    local task = running()
-    assert(task, 'Not in async context')
+    check_current_task()
+    return check_yield(coroutine.yield(yield_marker, to_awaitable(...)))
+  end
 
-    -- TODO(lewis6991): needs test coverage. Happens when a task pcalls an await
-    if task._closing then
-      error('closed', 0)
+  --- Await an operation and return its failure as data.
+  ---
+  --- `pawait()` accepts the same forms as `await()`, but returns `false, err`
+  --- when the awaited operation itself fails. This is the recovery boundary for
+  --- optional child work:
+  ---
+  --- ```lua
+  --- vim.async.run(function()
+  ---   local ok, data_or_err = vim.async.pawait(vim.async.run(fetch_optional_data))
+  ---
+  ---   if ok then
+  ---     use(data_or_err)
+  ---   end
+  --- end)
+  --- ```
+  ---
+  --- `pawait()` is not `pcall()` for async code. It does not protect the parent
+  --- task from cancellation or from failures in unrelated children. For callback
+  --- overloads, callback values are treated exactly like `await()` results and
+  --- are only prefixed with `ok`; they are not interpreted as errors.
+  ---
+  --- When passed a pending child task, `pawait()` starts the task after the
+  --- parent is marked as awaiting it, so synchronous child failures are captured
+  --- before they can reach the parent. If the child has already failed, that
+  --- failure may already be pending on the parent.
+  --- @async
+  --- @generic T, R
+  --- @param ... any see overloads
+  --- @overload async fun(func: (fun(callback: fun(...: R...)): vim.async.Closable?)): boolean, R...
+  --- @overload async fun(argc: integer, func: (fun(...: T..., callback: fun(...: R...)): vim.async.Closable?), ...: T...): boolean, R...
+  --- @overload async fun(task: vim.async.Task<R>): boolean, R...
+  --- @return boolean ok
+  --- @return any|R... err_or_result
+  function M.pawait(...)
+    local current = check_current_task()
+    local awaitable = to_awaitable(...)
+
+    --- @param callback fun(err?: any, ok?: boolean, ...: any)
+    local function protected_awaitable(callback)
+      -- Only protect the awaited operation's error slot. Errors injected
+      -- directly into this task, such as cancellation or unrelated child
+      -- failures, bypass this wrapper and stay terminal.
+      return awaitable(function(err, ...)
+        if err ~= nil then
+          if current._closing then
+            callback('closed')
+          elseif current._error then
+            callback(current._error)
+          else
+            callback(nil, false, err)
+          end
+        else
+          callback(nil, true, ...)
+        end
+      end)
     end
 
-    local arg1 = select(1, ...)
-
-    local fn --- @type fun(...:R...): vim.async.Closable?
-    if type(arg1) == 'number' then
-      fn = norm_cb_fun(...)
-    elseif type(arg1) == 'function' then
-      fn = norm_cb_fun(1, arg1)
-    elseif getmetatable(arg1) == Task then
-      --- @param callback fun(err?: any, ...: R...)
-      fn = function(callback)
-        --- @cast arg1 vim.async.Task<R>
-        arg1:wait(callback)
-        return arg1
-      end
-    else
-      error('Invalid arguments, expected Task or (argc, func) got: ' .. tostring(arg1), 2)
-    end
-
-    return check_yield(coroutine.yield(yield_marker, fn))
+    --- @diagnostic disable-next-line: return-type-mismatch
+    return check_yield(coroutine.yield(yield_marker, protected_awaitable))
   end
 end
 
@@ -968,91 +1165,6 @@ end
 function M.is_closing()
   local task = running()
   return task and task._closing or false
-end
-
---- Protected call for async functions that propagates child task errors.
----
---- Similar to Lua's built-in `pcall`, but with special handling for child task
---- errors. This function will:
---- - Catch regular errors (return `false, err`)
---- - Propagate child task errors (re-throw them)
---- - Propagate cancellation errors (re-throw them)
----
---- This is useful when you want to handle regular errors locally, but allow
---- child task failures to bubble up to the parent task, maintaining the
---- structured concurrency guarantees.
----
---- Note: This function uses `xpcall` with a custom error handler to capture the
---- full stack trace before the stack is unwound. When re-throwing child errors
---- or cancellation errors, the traceback is preserved. Regular errors are
---- caught and returned with their error messages as usual.
----
---- Example:
---- ```lua
---- vim.async.run(function()
----   local child = vim.async.run(function()
----     vim.async.sleep(10)
----     error('CHILD_FAILED')
----   end)
----
----   -- Regular pcall would catch the child error
----   local ok1, err1 = pcall(function()
----     vim.async.sleep(100)
----   end)
----   -- ok1 = false, err1 = 'child error: CHILD_FAILED'
----
----   -- async.pcall propagates child errors
----   local ok2, err2 = vim.async.pcall(function()
----     error('REGULAR_ERROR')
----   end)
----   -- ok2 = false, err2 = 'REGULAR_ERROR'
----
----   -- But child errors propagate:
----   vim.async.pcall(function()
----     vim.async.sleep(100)
----   end)
----   -- This will error with 'child error: CHILD_FAILED'
---- end)
---- ```
----
---- @async
---- @generic T
---- @param fn async fun(): T...
---- @return boolean ok
---- @return any|T... err_or_result
-function M.pcall(fn)
-  validate('fn', fn, 'callable')
-
-  local captured_traceback
-  local results = pack_len(xpcall(fn, function(err)
-    -- Error handler runs before stack is unwound
-    -- Capture the full traceback here
-    captured_traceback = debug.traceback(err, 2)
-
-    -- Check if this is a child error or cancellation
-    if type(err) == 'string' then
-      if err:match('^child error: ') or err == 'closed' then
-        -- For child errors/cancellations, return the traceback so it can be re-thrown
-        return captured_traceback
-      end
-    end
-
-    -- For regular errors, just return the error message
-    return err
-  end))
-
-  local ok = results[1]
-
-  if not ok then
-    local err = results[2]
-    -- If this is a child error or cancellation, re-throw with the full traceback
-    if err == captured_traceback then
-      -- This is a child error or cancellation - re-throw it
-      error(err, 0)
-    end
-  end
-
-  return unpack_len(results)
 end
 
 --- Creates an async function from a callback style function.
@@ -1084,7 +1196,7 @@ end
 --- @generic T, R
 --- @param argc integer
 --- @param func fun(...: T..., callback: fun(...: R...)): vim.async.Closable?
---- @return async fun(...:T...): R...
+--- @return async fun(...: T...): R...
 function M.wrap(argc, func)
   validate('argc', argc, 'number')
   validate('func', func, 'callable')
@@ -1098,7 +1210,7 @@ do --- M.iter(), M.await_all(), M.await_any()
   --- @async
   --- @generic R
   --- @param tasks vim.async.Task<R>[] A list of tasks to wait for and iterate over.
-  --- @return async fun(): (integer?, any?, ...R) iterator that yields the index, error, and results of each task.
+  --- @return async fun(): (integer?, any?, R...) iterator that yields the index, error, and results of each task.
   local function iter(tasks)
     validate('tasks', tasks, 'table')
 
@@ -1110,11 +1222,11 @@ do --- M.iter(), M.await_all(), M.await_any()
 
     -- Keep track of the callbacks so we can remove them when the iterator
     -- is garbage collected.
-    --- @type table<vim.async.Task<any>,function>
+    --- @type table<vim.async.Task<any>, function>
     local task_cbs = setmetatable({}, { __mode = 'v' })
 
-    -- Wait on all the tasks. Keep references to the task futures and wait
-    -- callbacks so we can remove them when the iterator is garbage collected.
+    -- Observe all the tasks. Keep the callbacks so they can be removed when
+    -- the iterator is garbage collected.
     for i, task in ipairs(tasks) do
       --- @param err? any
       --- @param ... R
@@ -1127,7 +1239,7 @@ do --- M.iter(), M.await_all(), M.await_any()
       end
 
       task_cbs[task] = cb
-      task:wait(cb)
+      task:on_complete(cb)
     end
 
     --- @async
@@ -1191,7 +1303,7 @@ do --- M.iter(), M.await_all(), M.await_any()
   --- @async
   --- @generic R
   --- @param tasks vim.async.Task<R>[] A list of tasks to wait for and iterate over.
-  --- @return async fun(): (integer?, any?, ...R) iterator that yields the index, error, and results of each task.
+  --- @return async fun(): (integer?, any?, R...) iterator that yields the index, error, and results of each task.
   function M.iter(tasks)
     return iter(tasks)
   end
@@ -1228,11 +1340,11 @@ do --- M.iter(), M.await_all(), M.await_any()
   --- ```
   --- @async
   --- @param tasks vim.async.Task<any>[]
-  --- @return table<integer,[any?,...?]>
+  --- @return table<integer, [any?, ...?]>
   function M.await_all(tasks)
     assert(running(), 'Not in async context')
     local itr = iter(tasks)
-    local results = {} --- @type table<integer,table>
+    local results = {} --- @type table<integer, table>
 
     --- @param i integer?
     --- @param ... any
@@ -1320,6 +1432,7 @@ function M.timeout(duration, task)
     task:close()
     error('timeout')
   end
+  timer:close()
   return M.await(task)
 end
 
@@ -1327,7 +1440,7 @@ do --- M._future()
   --- Future objects are used to bridge low-level callback-based code with
   --- high-level async/await code.
   --- @class vim.async.Future<R>
-  --- @field private _callbacks table<integer,fun(err?: any, ...: R...)>
+  --- @field private _callbacks table<integer, fun(err?: any, ...: R...)>
   --- @field private _callback_pos integer
   --- Error result of the task is an error occurs.
   --- Must use `await` to get the result.
@@ -1430,7 +1543,7 @@ do --- M._future()
   ---
   --- A Future is a low-level awaitable that is not intended to be used in
   --- application-level code.
-  --- @return vim.async.Future
+  --- @return vim.async.Future<any>
   function M._future()
     return setmetatable({
       _callbacks = {},
@@ -1636,7 +1749,7 @@ do --- M._queue()
   ---  end)
   --- ```
   --- @param max_size? integer The maximum number of items in the queue, defaults to no limit
-  --- @return vim.async.Queue
+  --- @return vim.async.Queue<any>
   function M._queue(max_size)
     local self = setmetatable({
       _items = {},
@@ -1678,6 +1791,8 @@ do --- M.semaphore()
   --- @return R... # Result(s) of the executed function.
   function Semaphore:with(fn)
     self:acquire()
+    -- This pcall is only a try/finally guard for release(); all errors are
+    -- immediately rethrown so it is not an async recovery boundary.
     local r = pack_len(pcall(fn))
     self:release()
     local stat = r[1]
@@ -1755,7 +1870,7 @@ end
 
 do --- M._inspect_tree()
   --- @private
-  --- @param parent? vim.async.Task
+  --- @param parent? vim.async.Task<any>
   --- @param prefix? string
   --- @return string[]
   local function inspect(parent, prefix)

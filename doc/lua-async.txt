@@ -211,12 +211,34 @@ automates the lifetime, cancellation, and error management that must be
 handled explicitly in Go.
 
 ------------------------------------------------------------------------------
+vim.async.init({opts})                                          *async.init()*
+
+    Initialize async runtime for non-Neovim environments.
+
+    In Neovim, initialization happens automatically. Only call this if you're
+    using the library outside of Neovim or you want to override the detected
+    runtime bindings.
+
+    `opts.wait(timeout, predicate)` must run the event loop until `predicate`
+    returns true or the timeout expires. `opts.schedule(callback)` must defer a
+    callback to the next event loop turn. `opts.new_timer()` is only required
+    for timer APIs such as `sleep()` and `timeout()`.
+
+    Parameters: ~
+    - {opts} (`vim.async.InitOpts`) (See |vim.async.InitOpts|)
+
+
+------------------------------------------------------------------------------
 vim.async.run({func}, {...})                                     *async.run()*
 
     Run a function in an async context, asynchronously.
 
     Returns an |vim.async.Task| object which can be used to wait or await the result
     of the function.
+
+    Child tasks created from inside another task are attached immediately, but
+    their first resume is deferred until the parent awaits them, suspends, or
+    exits.
 
     Examples:
     >lua
@@ -275,6 +297,12 @@ vim.async.await({...})                                         *async.await()*
     end)
 <
 
+    Do not use raw `pcall` to recover from `await()` or any function that may
+    suspend. Child task failures and cancellation are delivered through Lua
+    errors too, so `pcall` cannot tell them apart from ordinary local failures.
+    Catch only synchronous work, use `pcall` only for cleanup before rethrowing,
+    or handle async failures at task boundaries.
+
     Attributes: ~
     - `async`
 
@@ -293,6 +321,53 @@ vim.async.await({...})                                         *async.await()*
     - (`R ...`)
 
 ------------------------------------------------------------------------------
+vim.async.pawait({...})                                       *async.pawait()*
+
+    Await an operation and return its failure as data.
+
+    `pawait()` accepts the same forms as `await()`, but returns `false, err`
+    when the awaited operation itself fails. This is the recovery boundary for
+    optional child work:
+
+    >lua
+    vim.async.run(function()
+      local ok, data_or_err = vim.async.pawait(vim.async.run(fetch_optional_data))
+
+      if ok then
+        use(data_or_err)
+      end
+    end)
+<
+
+    `pawait()` is not `pcall()` for async code. It does not protect the parent
+    task from cancellation or from failures in unrelated children. For callback
+    overloads, callback values are treated exactly like `await()` results and
+    are only prefixed with `ok`; they are not interpreted as errors.
+
+    When passed a pending child task, `pawait()` starts the task after the
+    parent is marked as awaiting it, so synchronous child failures are captured
+    before they can reach the parent. If the child has already failed, that
+    failure may already be pending on the parent.
+
+    Attributes: ~
+    - `async`
+
+    Generics: ~
+    - `T`, `R`
+
+    Overloads: ~
+    - `async fun(func: fun(callback: fun(...: R ...)) -> vim.async.Closable?) -> (boolean,R ...)`
+    - `async fun(argc: integer, func: fun(...: T ..., callback: fun(...: R ...)) -> vim.async.Closable?, ...: T ...) -> (boolean,R ...)`
+    - `async fun(task: vim.async.Task<R>) -> (boolean,R ...)`
+
+    Parameters: ~
+    - {...} (`any`): see overloads
+
+    Returns: ~
+    - {ok} (`boolean`)
+    - {err_or_result} (`(any|R ...)`)
+
+------------------------------------------------------------------------------
 vim.async.is_closing()                                    *async.is_closing()*
 
     Returns true if the current task has been closed.
@@ -301,67 +376,6 @@ vim.async.is_closing()                                    *async.is_closing()*
 
     Returns: ~
     - (`boolean`)
-
-------------------------------------------------------------------------------
-vim.async.pcall({fn})                                          *async.pcall()*
-
-    Protected call for async functions that propagates child task errors.
-
-    Similar to Lua's built-in `pcall`, but with special handling for child task
-    errors. This function will:
-    - Catch regular errors (return `false, err`)
-    - Propagate child task errors (re-throw them)
-    - Propagate cancellation errors (re-throw them)
-
-    This is useful when you want to handle regular errors locally, but allow
-    child task failures to bubble up to the parent task, maintaining the
-    structured concurrency guarantees.
-
-    Note: This function uses `xpcall` with a custom error handler to capture the
-    full stack trace before the stack is unwound. When re-throwing child errors
-    or cancellation errors, the traceback is preserved. Regular errors are
-    caught and returned with their error messages as usual.
-
-    Example:
-    >lua
-    vim.async.run(function()
-      local child = vim.async.run(function()
-        vim.async.sleep(10)
-        error('CHILD_FAILED')
-      end)
-
-      -- Regular pcall would catch the child error
-      local ok1, err1 = pcall(function()
-        vim.async.sleep(100)
-      end)
-      -- ok1 = false, err1 = 'child error: CHILD_FAILED'
-
-      -- async.pcall propagates child errors
-      local ok2, err2 = vim.async.pcall(function()
-        error('REGULAR_ERROR')
-      end)
-      -- ok2 = false, err2 = 'REGULAR_ERROR'
-
-      -- But child errors propagate:
-      vim.async.pcall(function()
-        vim.async.sleep(100)
-      end)
-      -- This will error with 'child error: CHILD_FAILED'
-    end)
-<
-
-    Attributes: ~
-    - `async`
-
-    Generics: ~
-    - `T`
-
-    Parameters: ~
-    - {fn} (`async fun() -> T ...`)
-
-    Returns: ~
-    - {ok} (`boolean`)
-    - {err_or_result} (`(any|T ...)`)
 
 ------------------------------------------------------------------------------
 vim.async.wrap({argc}, {func})                                  *async.wrap()*
@@ -453,7 +467,7 @@ vim.async.iter({tasks})                                         *async.iter()*
     - {tasks} (`vim.async.Task<R>[]`): A list of tasks to wait for and iterate over.
 
     Returns: ~
-    - {iterator} (`async fun() -> (integer?,any,unknown)`): that yields the index, error, and results of each task.
+    - {iterator} (`async fun() -> (integer?,any,R ...)`): that yields the index, error, and results of each task.
 
 ------------------------------------------------------------------------------
 vim.async.await_all({tasks})                               *async.await_all()*
@@ -604,34 +618,11 @@ vim.async.semaphore({permits})                             *async.semaphore()*
     Returns: ~
     - (`vim.async.Semaphore`) (See |vim.async.Semaphore|)
 
-------------------------------------------------------------------------------
-vim.async.init({opts})                                          *async.init()*
-
-    Initialize async runtime for non-Neovim environments.
-
-    In Neovim, initialization happens automatically. Only call this if you're
-    using the library outside of Neovim or you want to override the detected
-    runtime bindings.
-
-    See README.md for details on using async in non-Neovim environments.
-
-    Parameters: ~
-    - {opts} (`table`): Configuration table with fields:
-   - wait (function): Block main thread and run event loop until predicate
-     returns true or timeout. Signature: wait(timeout, predicate) -> boolean
-   - schedule (function): Defer callback to next event loop iteration.
-     Signature: schedule(callback) -> nil
-   - new_timer (function, optional): Create a new timer handle.
-     The returned object must have `:start(ms, repeat, callback)` and
-     `:close(callback?)` methods (compatible with libuv timer interface).
-     Required for `async.sleep()` and `async.timeout()`.
-
-
 ==============================================================================
 *vim.async.Closable*
 ------------------------------------------------------------------------------
 *vim.async.Closable.close*
-    Type: `fun(self, callback: (fun(...) -> ...)?)
+    Type: `fun(self, callback: (fun())?)
 
 
 ------------------------------------------------------------------------------
@@ -741,6 +732,26 @@ vim.async.Future:complete({err}, {...})              *async.Future:complete()*
     Parameters: ~
     - {err} (`any`)
     - {...} (`any`): result
+
+
+==============================================================================
+*vim.async.InitOpts*
+------------------------------------------------------------------------------
+*vim.async.InitOpts.wait*
+    Type: `fun(timeout: integer, predicate: fun() -> boolean) -> boolean
+
+
+------------------------------------------------------------------------------
+*vim.async.InitOpts.schedule*
+    Type: `fun(callback: fun())
+
+
+------------------------------------------------------------------------------
+*vim.async.InitOpts.new_timer*
+    Type: `vim.async.TimerFactory?
+
+
+    Create libuv-compatible timers for `sleep()` and `timeout()`.
 
 
 ==============================================================================
@@ -908,44 +919,45 @@ vim.async.Task:completed()                            *async.Task:completed()*
     - (`boolean`)
 
 ------------------------------------------------------------------------------
-vim.async.Task:wait({callback_or_timeout})                 *async.Task:wait()*
+vim.async.Task:on_complete({callback})              *async.Task:on_complete()*
 
     Add a callback to be run when the Task has completed.
-
-    - If a timeout or `nil` is provided, the Task will synchronously wait for the
-      task to complete for the given time in milliseconds.
-
-      >lua
-      local result = task:wait(10) -- wait for 10ms or else error
-
-      local result = task:wait() -- wait indefinitely
-<
-
-    - If a function is provided, it will be called when the Task has completed
-      with the arguments:
-      - (`err: string`) - if the Task completed with an error.
-      - (`nil`, `...:any`) - the results of the Task if it completed successfully.
-
 
     If the Task is already done when this method is called, the callback is
     called immediately with the results.
 
-    Overloads: ~
-    - `fun(timeout: integer?) -> R ...`
+    This only observes completion. It does not start a pending task.
 
     Parameters: ~
-    - {callback_or_timeout} (`(integer|fun(err: any, ...: R ...))?`)
+    - {callback} (`fun(err: any, ...: R ...)`)
+
+
+------------------------------------------------------------------------------
+vim.async.Task:wait({timeout})                             *async.Task:wait()*
+
+    Synchronously wait for the Task to complete.
+
+    If a timeout is provided, waits for the given time in milliseconds before
+    failing with `"timeout"`. With no timeout, waits indefinitely.
+
+    >lua
+    local result = task:wait(10) -- wait for 10ms or else error
+
+    local result = task:wait() -- wait indefinitely
+<
+
+    Parameters: ~
+    - {timeout} (`integer?`)
 
     Returns: ~
-    - (`(any,any ...)`)
+    - (`R ...`)
 
 ------------------------------------------------------------------------------
 vim.async.Task:pwait({timeout})                           *async.Task:pwait()*
 
     Protected-call version of `wait()`.
 
-    Does not throw an error if the task fails or times out. Instead, returns
-    the status and the results.
+    Equivalent to `pcall(task.wait, task, timeout)`.
 
     Parameters: ~
     - {timeout} (`integer?`)
@@ -962,7 +974,7 @@ vim.async.Task:detach()                                  *async.Task:detach()*
     The task becomes a top-level task.
 
     Returns: ~
-    - (`vim.async.Task`) (See |vim.async.Task|)
+    - (`vim.async.Task<R>`)
 
 ------------------------------------------------------------------------------
 vim.async.Task:traceback({msg}, {level})              *async.Task:traceback()*
@@ -983,7 +995,7 @@ vim.async.Task:raise_on_error()                  *async.Task:raise_on_error()*
     If a task completes with an error, raise the error
 
     Returns: ~
-    - {self} (`vim.async.Task`) (See |vim.async.Task|)
+    - {self} (`vim.async.Task<R>`)
 
 ------------------------------------------------------------------------------
 vim.async.Task:close({callback})                          *async.Task:close()*

@@ -166,7 +166,7 @@ describe('async', function()
         a = a + 1
       end)
 
-      task:wait(function()
+      task:on_complete(function()
         did_cb = true
       end) -- non-blocking
 
@@ -174,6 +174,29 @@ describe('async', function()
 
       assert(a == 2)
       assert(did_cb)
+    end)
+
+    it_exec('on_complete observes a pending child task without starting it', function()
+      local results = {}
+
+      run(function()
+        local child = run(function()
+          results[#results + 1] = 'child_started'
+          return 'child_done'
+        end)
+
+        child:on_complete(function(err, value)
+          assert(not err, tostring(err))
+          results[#results + 1] = value
+        end)
+        results[#results + 1] = 'after_on_complete'
+      end):wait(100)
+
+      eq({
+        'after_on_complete',
+        'child_started',
+        'child_done',
+      }, results)
     end)
 
     it_exec('handles tasks that complete', function()
@@ -244,32 +267,69 @@ stack traceback:
       end):wait()
       assert(res == 'done')
     end)
+
+    it_exec('does not retain unused run arguments after task starts', function()
+      local unused = {}
+      local weak = setmetatable({ unused }, { __mode = 'v' })
+
+      local task = run(function(_)
+        Async.sleep(100)
+      end, 'used', unused)
+
+      unused = nil
+      collectgarbage('collect')
+      collectgarbage('collect')
+
+      local retained = weak[1]
+      task:close()
+      check_task_err(task, 'closed')
+      eq(nil, retained)
+    end)
   end)
 
   describe('module wrappers', function()
-    it_exec('can run the core module without vim bindings', function()
+    it_exec('can run the public module without vim bindings', function()
       local ok, err = xpcall(function()
-        local chunk = assert(loadfile('lua/async/core.lua'))
+        local chunk = assert(loadfile('lua/async.lua'))
+        local function require_fresh(name)
+          if name ~= 'async.core' then
+            return require(name)
+          end
+
+          local core_chunk = assert(loadfile('lua/async/core.lua'))
+          setfenv(
+            core_chunk,
+            setmetatable({
+              require = require,
+              vim = false,
+            }, { __index = _G })
+          )
+          return core_chunk()
+        end
+
         local env = setmetatable({
-          require = require,
+          require = require_fresh,
           vim = false,
         }, { __index = _G })
 
         setfenv(chunk, env)
 
         local async = chunk()
-        async._runtime.wait = function(timeout, predicate)
-          local start = os.clock()
-          while not predicate() do
-            if (os.clock() - start) * 1000 >= timeout then
-              return false
+        assert(async._runtime == nil)
+        async.init({
+          wait = function(timeout, predicate)
+            local start = os.clock()
+            while not predicate() do
+              if (os.clock() - start) * 1000 >= timeout then
+                return false
+              end
             end
-          end
-          return true
-        end
-        async._runtime.schedule = function(callback)
-          callback()
-        end
+            return true
+          end,
+          schedule = function(callback)
+            callback()
+          end,
+        })
 
         local result = async
           .run(function()
@@ -285,23 +345,6 @@ stack traceback:
       if not ok then
         error(err)
       end
-    end)
-
-    it_exec('exposes a neovim wrapper without init', function()
-      package.loaded['async.nvim'] = nil
-      local async_nvim = require('async.nvim')
-
-      assert(async_nvim.init == nil)
-      assert(async_nvim._runtime == nil)
-
-      local result = async_nvim
-        .run(function()
-          async_nvim.await(vim.schedule)
-          return 'ok'
-        end)
-        :wait(10)
-
-      eq('ok', result)
     end)
   end)
 
@@ -362,6 +405,13 @@ stack traceback:
     it_exec('can async timeout a test', function()
       local task = run(eternity)
       check_task_err(run(Async.timeout, 10, task), 'timeout')
+    end)
+
+    it_exec('returns when the task completes before the timeout', function()
+      local task = run(function()
+        return 'FINISH'
+      end)
+      eq('FINISH', run(Async.timeout, 100, task):wait(10))
     end)
 
     it_exec('closes detached child tasks', function()
@@ -635,6 +685,41 @@ stack traceback:
       t3:wait()
     end)
 
+    it_exec('does not wait for detached task children after sync wait times out', function()
+      local detached --- @type vim.async.Task
+      local release --- @type fun()?
+      local results = {}
+
+      local parent = run(function()
+        await(vim.schedule)
+
+        detached = run(function()
+          run(function()
+            await(function(callback)
+              release = callback
+            end)
+            results[#results + 1] = 'detached_child_done'
+          end)
+        end):detach()
+
+        local ok, err = detached:pwait(10)
+        eq(false, ok)
+        eq('timeout', err)
+
+        results[#results + 1] = 'parent_done'
+      end)
+
+      parent:wait(50)
+
+      eq({ 'parent_done' }, results)
+      assert(release, 'detached child was not started')
+
+      release()
+      detached:wait(50)
+
+      eq({ 'parent_done', 'detached_child_done' }, results)
+    end)
+
     it_exec('automatically awaits child tasks', function()
       local child1, child2 --- @type vim.async.Task, vim.async.Task
       local main = run(function()
@@ -789,6 +874,32 @@ stack traceback:
       check_task_err(task, 'Unexpected coroutine.resume%(%)')
       t:close()
     end)
+
+    it_exec('preserves child errors after invalid coroutine.resume', function()
+      local blocker = run(eternity)
+      local co --- @type thread
+      local parent = run(function()
+        co = coroutine.running()
+        run(function()
+          await(vim.schedule)
+          error('CHILD ERROR')
+        end)
+        await(blocker)
+      end)
+
+      local status, err = coroutine.resume(co)
+      assert(not status, 'Expected coroutine.resume to fail')
+      eq(err, 'Unexpected coroutine.resume()')
+      local check_ok, check_err =
+        pcall(check_task_err, parent, 'child error: test/async_spec.lua:%d+: CHILD ERROR')
+
+      blocker:close()
+      check_task_err(blocker, 'closed')
+
+      if not check_ok then
+        error(check_err, 0)
+      end
+    end)
   end)
 
   describe('inspect_tree', function()
@@ -834,7 +945,7 @@ parent@test/async_spec.lua:%d+ %[awaiting%]
 
       eq(
         p([=[
-parent@test/async_spec.lua:%d+ %[normal%]
+parent@test/async_spec.lua:%d+ %[awaiting%]
 ├─ child1@test/async_spec.lua:%d+ %[awaiting%]
 ├─ child2@test/async_spec.lua:%d+ %[awaiting%]
 └─ child3@test/async_spec.lua:%d+ %[running%]
@@ -920,8 +1031,8 @@ parent@test/async_spec.lua:%d+ %[normal%]
     end)
   end)
 
-  describe('edge-triggered errors and level-triggered cancellations', function()
-    it_exec('normal errors are edge-triggered (consumed after first catch)', function()
+  describe('pcall and task-control errors', function()
+    it_exec('child errors remain terminal after raw pcall catches delivery', function()
       local results = {}
       local parent = run(function()
         local _child = run(function()
@@ -944,23 +1055,197 @@ parent@test/async_spec.lua:%d+ %[normal%]
 
         if not ok2 then
           results[#results + 1] = 'caught_second'
-          results[#results + 1] = tostring(err2)
+          results[#results + 1] = err2:match('CHILD ERROR') and 'has_error' or 'no_error'
         else
           results[#results + 1] = 'no_second_error'
         end
 
-        Async.sleep(1)
-        results[#results + 1] = 'completed_normally'
+        results[#results + 1] = 'returned'
       end)
 
-      parent:wait(200)
+      local ok, err = parent:pwait(200)
+      eq(false, ok)
+      --- @cast err string
+      assert(err:match('child error:.*CHILD ERROR'), 'Expected child error, got: ' .. tostring(err))
 
       eq({
         'caught_first',
         'has_error',
-        'no_second_error',
-        'completed_normally',
+        'caught_second',
+        'has_error',
+        'returned',
       }, results)
+    end)
+
+    it_exec('awaited child errors remain terminal without child wrapper', function()
+      local results = {}
+      local parent = run(function()
+        local child = run(function()
+          error('AWAITED CHILD ERROR')
+        end)
+
+        local ok1, err1 = pcall(function()
+          await(child)
+        end)
+
+        if not ok1 then
+          results[#results + 1] = err1:match('AWAITED CHILD ERROR') and 'caught_child' or 'other'
+          results[#results + 1] = err1:match('child error:') and 'wrapped' or 'unwrapped'
+        end
+
+        local ok2, err2 = pcall(function()
+          Async.sleep(1)
+        end)
+
+        if not ok2 then
+          results[#results + 1] = err2:match('AWAITED CHILD ERROR') and 'caught_again' or 'other'
+          results[#results + 1] = err2:match('child error:') and 'wrapped' or 'unwrapped'
+        end
+
+        results[#results + 1] = 'returned'
+      end)
+
+      local ok, err = parent:pwait(200)
+      eq(false, ok)
+      --- @cast err string
+      assert(
+        err:match('test/async_spec.lua:%d+: AWAITED CHILD ERROR'),
+        'Expected awaited child error, got: ' .. tostring(err)
+      )
+      assert(not err:match('child error:'), 'Did not expect child wrapper, got: ' .. err)
+
+      eq({
+        'caught_child',
+        'unwrapped',
+        'caught_again',
+        'unwrapped',
+        'returned',
+      }, results)
+    end)
+
+    it_exec('pawait returns successful task results', function()
+      local parent = run(function()
+        local ok, a, b, c = Async.pawait(run(function()
+          Async.sleep(1)
+          return 1, 'two', true
+        end))
+
+        eq(true, ok)
+        eq(1, a)
+        eq('two', b)
+        eq(true, c)
+
+        return 'parent ok'
+      end)
+
+      eq('parent ok', parent:wait(100))
+    end)
+
+    it_exec('pawait accepts await callback overloads', function()
+      local parent = run(function()
+        local ok1, value = Async.pawait(function(callback)
+          vim.schedule(function()
+            callback('scheduled')
+          end)
+        end)
+
+        local ok2, a, b = Async.pawait(2, function(prefix, callback)
+          vim.schedule(function()
+            callback(prefix, 'done')
+          end)
+        end, 'arg')
+
+        eq({ true, 'scheduled' }, { ok1, value })
+        eq({ true, 'arg', 'done' }, { ok2, a, b })
+
+        return 'parent ok'
+      end)
+
+      eq('parent ok', parent:wait(100))
+    end)
+
+    it_exec('pawait returns synchronous child errors as data', function()
+      local results = {}
+      local parent = run(function()
+        local child = run(function()
+          results[#results + 1] = 'child_started'
+          error('SYNC CHILD ERROR')
+        end)
+
+        results[#results + 1] = 'after_run'
+        local ok, err = Async.pawait(child)
+
+        eq(false, ok)
+        --- @cast err string
+        results[#results + 1] = err:match('SYNC CHILD ERROR') and 'got_error' or 'other'
+        results[#results + 1] = err:match('child error:') and 'wrapped' or 'unwrapped'
+
+        Async.sleep(1)
+        results[#results + 1] = 'continued'
+
+        return 'parent ok'
+      end)
+
+      eq('parent ok', parent:wait(100))
+      eq({
+        'after_run',
+        'child_started',
+        'got_error',
+        'unwrapped',
+        'continued',
+      }, results)
+    end)
+
+    it_exec('pawait returns asynchronous child errors as data', function()
+      local results = {}
+      local parent = run(function()
+        local ok, err = Async.pawait(run(function()
+          Async.sleep(1)
+          error('ASYNC CHILD ERROR')
+        end))
+
+        eq(false, ok)
+        --- @cast err string
+        results[#results + 1] = err:match('ASYNC CHILD ERROR') and 'got_error' or 'other'
+        results[#results + 1] = err:match('child error:') and 'wrapped' or 'unwrapped'
+
+        Async.sleep(1)
+        results[#results + 1] = 'continued'
+
+        return 'parent ok'
+      end)
+
+      eq('parent ok', parent:wait(100))
+      eq({
+        'got_error',
+        'unwrapped',
+        'continued',
+      }, results)
+    end)
+
+    it_exec('pawait keeps parent cancellation terminal', function()
+      local results = {}
+      local child --- @type vim.async.Task
+      local parent = run(function()
+        child = run(eternity)
+
+        local ok = pcall(function()
+          Async.pawait(child)
+        end)
+
+        results[#results + 1] = ok and 'pawait_ok' or 'pawait_error'
+        Async.sleep(1)
+        results[#results + 1] = 'should_not_reach'
+      end)
+
+      run(function()
+        Async.sleep(1)
+        parent:close()
+      end):wait()
+
+      check_task_err(parent, 'closed')
+      check_task_err(child, 'closed')
+      eq({ 'pawait_error' }, results)
     end)
 
     it_exec('cancellations are level-triggered (persist across catches)', function()
@@ -1003,33 +1288,23 @@ parent@test/async_spec.lua:%d+ %[normal%]
       }, results)
     end)
 
-    it_exec('can handle error and continue with recovery logic', function()
+    it_exec('can recover synchronous errors inside async tasks', function()
       local results = {}
       run(function()
-        local _child = run(function()
-          Async.sleep(5)
-          error('SERVICE UNAVAILABLE')
-        end)
-
         local ok = pcall(function()
-          Async.sleep(100)
+          error('BAD CONFIG')
         end)
 
         if not ok then
           results[#results + 1] = 'error_caught'
-          Async.sleep(1)
-          results[#results + 1] = 'recovery_step_1'
-          Async.sleep(1)
-          results[#results + 1] = 'recovery_step_2'
         end
 
+        Async.sleep(1)
         results[#results + 1] = 'finished'
       end):wait(200)
 
       eq({
         'error_caught',
-        'recovery_step_1',
-        'recovery_step_2',
         'finished',
       }, results)
     end)
@@ -1105,7 +1380,7 @@ parent@test/async_spec.lua:%d+ %[normal%]
       }, results)
     end)
 
-    it_exec('multiple child errors - each new error propagates', function()
+    it_exec('first child error remains pending across subsequent awaits', function()
       local results = {}
       local parent = run(function()
         local _child1 = run(function()
@@ -1131,18 +1406,24 @@ parent@test/async_spec.lua:%d+ %[normal%]
         end)
 
         if not ok2 then
-          results[#results + 1] = err2:match('ERROR_2') and 'got_error_2' or 'other'
+          results[#results + 1] = err2:match('ERROR_1') and 'got_error_1_again' or 'other'
         end
 
-        results[#results + 1] = 'both_errors_handled'
+        results[#results + 1] = 'returned'
       end)
 
-      parent:wait(200)
+      local ok, err = parent:pwait(200)
+      eq(false, ok)
+      --- @cast err string
+      assert(
+        err:match('child error:.*ERROR_1'),
+        'Expected first child error, got: ' .. tostring(err)
+      )
 
       eq({
         'got_error_1',
-        'got_error_2',
-        'both_errors_handled',
+        'got_error_1_again',
+        'returned',
       }, results)
     end)
 
@@ -1306,6 +1587,32 @@ parent@test/async_spec.lua:%d+ %[normal%]
       assert(err:match('child error:.*CHILD_ERROR'), 'Expected child error, got: ' .. tostring(err))
     end)
 
+    it_exec('child error during parent finalization completes once and closes siblings', function()
+      local completions = 0
+      local sibling --- @type vim.async.Task
+
+      local parent = run(function()
+        local _child = run(function()
+          Async.sleep(1)
+          error('CHILD_ERROR')
+        end)
+
+        sibling = run(eternity)
+      end)
+
+      parent:on_complete(function()
+        completions = completions + 1
+      end)
+
+      local ok, err = parent:pwait(100)
+
+      eq(false, ok)
+      --- @cast err string
+      assert(err:match('child error:.*CHILD_ERROR'), 'Expected child error, got: ' .. tostring(err))
+      eq(1, completions)
+      check_task_err(sibling, 'closed')
+    end)
+
     it_exec('callback called multiple times is handled gracefully', function()
       -- Test that calling callback multiple times doesn't break things
       local call_count = 0
@@ -1454,300 +1761,6 @@ parent@test/async_spec.lua:%d+ %[normal%]
       eq(true, close_called, 'close() should have been called')
       assert(not ok, 'Task should have errored')
       assert(err:match('CLOSE_ERROR'), 'Expected CLOSE_ERROR, got: ' .. tostring(err))
-    end)
-  end)
-
-  describe('async.pcall', function()
-    it_exec('catches regular errors', function()
-      local result --- @type {ok: boolean, err: any}
-      local task = run(function()
-        local ok, err = Async.pcall(function()
-          error('REGULAR_ERROR')
-        end)
-        result = { ok = ok, err = err }
-      end)
-
-      task:wait(100)
-
-      eq(false, result.ok)
-      assert(
-        result.err:match('REGULAR_ERROR'),
-        'Expected REGULAR_ERROR, got: ' .. tostring(result.err)
-      )
-    end)
-
-    it_exec('returns results on success', function()
-      local result --- @type {ok: boolean, a: any, b: any, c: any}
-      local task = run(function()
-        local ok, a, b, c = Async.pcall(function()
-          return 1, 'two', true
-        end)
-        result = { ok = ok, a = a, b = b, c = c }
-      end)
-
-      task:wait(100)
-
-      eq(true, result.ok)
-      eq(1, result.a)
-      eq('two', result.b)
-      eq(true, result.c)
-    end)
-
-    it_exec('propagates child task errors', function()
-      local parent_task = run(function()
-        -- Start a child that will error
-        local _child = run(function()
-          Async.sleep(5)
-          error('CHILD_ERROR')
-        end)
-
-        -- Use async.pcall to try to catch errors
-        Async.pcall(function()
-          Async.sleep(100) -- Wait long enough for child to error
-        end)
-
-        -- Should never get here because child error propagates
-        error('Should not reach here')
-      end)
-
-      local ok, err = parent_task:pwait(100)
-
-      eq(false, ok)
-      assert(err:match('child error:.*CHILD_ERROR'), 'Expected child error, got: ' .. tostring(err))
-    end)
-
-    it_exec('regular pcall catches child errors (for comparison)', function()
-      local caught_error --- @type {ok: boolean, err: any}
-      local parent_task = run(function()
-        -- Start a child that will error
-        local _child = run(function()
-          Async.sleep(5)
-          error('CHILD_ERROR')
-        end)
-
-        -- Regular pcall catches child errors
-        local ok, err = pcall(function()
-          Async.sleep(100)
-        end)
-
-        caught_error = { ok = ok, err = err }
-      end)
-
-      parent_task:wait(100)
-
-      eq(false, caught_error.ok)
-      assert(
-        caught_error.err:match('child error:.*CHILD_ERROR'),
-        'Expected child error, got: ' .. tostring(caught_error.err)
-      )
-    end)
-
-    it_exec('propagates cancellation errors', function()
-      local task = run(function()
-        -- Use async.pcall inside a closing task
-        Async.pcall(function()
-          Async.sleep(100)
-        end)
-
-        -- Should never get here
-        error('Should not reach here')
-      end)
-
-      -- Close the task immediately
-      task:close()
-
-      local ok, err = task:pwait(100)
-
-      eq(false, ok)
-      -- With xpcall, we now get a full traceback for cancellation errors
-      assert(err:match('closed'), 'Error should contain "closed"')
-    end)
-
-    it_exec('catches regular errors but propagates child errors in same task', function()
-      local results = {}
-      local parent_task = run(function()
-        -- Start a child that will error soon
-        local _child = run(function()
-          Async.sleep(20)
-          error('CHILD_ERROR')
-        end)
-
-        -- First async.pcall catches a regular error
-        local ok1, err1 = Async.pcall(function()
-          error('REGULAR_ERROR_1')
-        end)
-        table.insert(results, { step = 1, ok = ok1, err = err1 })
-
-        -- Second async.pcall also catches a regular error
-        local ok2, err2 = Async.pcall(function()
-          error('REGULAR_ERROR_2')
-        end)
-        table.insert(results, { step = 2, ok = ok2, err = err2 })
-
-        -- Third async.pcall will be interrupted by child error
-        Async.pcall(function()
-          Async.sleep(100) -- Wait for child to error
-        end)
-
-        -- Should never get here
-        error('Should not reach here')
-      end)
-
-      local ok, err = parent_task:pwait(100)
-
-      -- First two pcalls should have succeeded in catching errors
-      eq(2, #results)
-      eq(false, results[1].ok)
-      assert(results[1].err:match('REGULAR_ERROR_1'))
-      eq(false, results[2].ok)
-      assert(results[2].err:match('REGULAR_ERROR_2'))
-
-      -- Parent should have failed with child error
-      eq(false, ok)
-      assert(err:match('child error:.*CHILD_ERROR'), 'Expected child error, got: ' .. tostring(err))
-    end)
-
-    it_exec('works with async functions that await', function()
-      local result --- @type {ok: boolean, value: any}
-      local task = run(function()
-        local ok, value = Async.pcall(function()
-          Async.sleep(10)
-          return 'SUCCESS'
-        end)
-        result = { ok = ok, value = value }
-      end)
-
-      task:wait(100)
-
-      eq(true, result.ok)
-      eq('SUCCESS', result.value)
-    end)
-
-    it_exec('propagates child errors even when nested in pcall', function()
-      local inner_pcall_result --- @type {ok: boolean, err: any}
-      local outer_pcall_result --- @type {ok: boolean, err: any}
-      local parent_task = run(function()
-        local _child = run(function()
-          Async.sleep(5)
-          error('CHILD_ERROR')
-        end)
-
-        -- Nested pcalls
-        local ok_outer, err_outer = pcall(function()
-          local ok_inner, err_inner = Async.pcall(function()
-            Async.sleep(100)
-          end)
-          inner_pcall_result = { ok = ok_inner, err = err_inner }
-        end)
-        outer_pcall_result = { ok = ok_outer, err = err_outer }
-
-        -- Should not reach here because async.pcall re-throws
-        -- but the outer pcall will catch it
-      end)
-
-      local ok = parent_task:pwait(100)
-
-      -- The outer pcall should have caught the re-thrown child error
-      eq(false, outer_pcall_result.ok)
-      assert(
-        outer_pcall_result.err:match('child error:.*CHILD_ERROR'),
-        'Expected child error in outer pcall, got: ' .. tostring(outer_pcall_result.err)
-      )
-
-      -- The inner async.pcall shouldn't have returned normally
-      eq(nil, inner_pcall_result)
-
-      -- The parent task should complete successfully since outer pcall caught it
-      eq(true, ok)
-    end)
-
-    it_exec('preserves stack traces when propagating child errors', function()
-      local parent_task = run(function()
-        local _child = run(function()
-          Async.sleep(5)
-          error('CHILD_ERROR')
-        end)
-
-        -- Use async.pcall which should propagate the child error
-        Async.pcall(function()
-          Async.sleep(100)
-        end)
-      end)
-
-      local ok, err = parent_task:pwait(100)
-
-      eq(false, ok)
-      --- @cast err string
-      -- Check that the error message contains the child error
-      assert(err:match('CHILD_ERROR'), 'Expected CHILD_ERROR in: ' .. tostring(err))
-
-      -- Get the full traceback
-      local traceback = parent_task:traceback(err)
-
-      -- The error message (not the stack trace) contains the child error location
-      -- This is a limitation of Lua's error() - see async.pcall documentation
-      assert(traceback:match('CHILD_ERROR'), 'Traceback should contain CHILD_ERROR')
-      assert(err:match('test/async_spec.lua:%d+'), 'Error should contain file:line reference')
-    end)
-
-    it_exec('compare: traceback without async.pcall shows child location', function()
-      local parent_task = run(function()
-        local _child = run(function()
-          Async.sleep(5)
-          error('CHILD_ERROR_DIRECT')
-        end)
-
-        -- Don't use async.pcall - let child error propagate naturally
-        Async.sleep(100)
-      end)
-
-      local ok, err = parent_task:pwait(100)
-
-      eq(false, ok)
-      --- @cast err string
-
-      -- Get the full traceback
-      local traceback = parent_task:traceback(err)
-
-      -- Both approaches preserve the error message with location
-      assert(traceback:match('CHILD_ERROR_DIRECT'), 'Traceback should contain CHILD_ERROR_DIRECT')
-      assert(err:match('test/async_spec.lua:%d+'), 'Error should contain file:line reference')
-    end)
-
-    it_exec('xpcall can capture full stack trace before unwinding', function()
-      local captured_traceback
-      local captured_err --- @type string
-
-      local parent_task = run(function()
-        local _child = run(function()
-          Async.sleep(5)
-          error('CHILD_ERROR_XPCALL')
-        end)
-
-        -- Use xpcall to capture the stack trace before unwinding
-        xpcall(function()
-          Async.sleep(100)
-        end, function(err)
-          -- This handler runs BEFORE the stack is unwound
-          captured_err = err
-          captured_traceback = debug.traceback(err, 2)
-          return err -- Return the original error
-        end)
-
-        -- Should not reach here
-        error('Should not reach here')
-      end)
-
-      local ok = parent_task:pwait(100)
-
-      print('\n=== XPCALL Captured Traceback ===')
-      print('Error:', captured_err)
-      print('Traceback:', captured_traceback)
-      print('=== End ===\n')
-
-      eq(false, ok)
-      assert(captured_err:match('CHILD_ERROR_XPCALL'), 'Should capture child error')
-      assert(captured_traceback ~= nil, 'Should capture traceback')
     end)
   end)
 end)
