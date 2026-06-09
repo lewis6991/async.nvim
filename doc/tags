@@ -60,7 +60,4 @@ vim.async.Task.name	lua-async.txt	/*vim.async.Task.name*
 vim.async.Timer	lua-async.txt	/*vim.async.Timer*
 vim.async.Timer.start	lua-async.txt	/*vim.async.Timer.start*
 vim.async.TimerFactory	lua-async.txt	/*vim.async.TimerFactory*
-vim.async.run.Opts	lua-async.txt	/*vim.async.run.Opts*
-vim.async.run.Opts.detached	lua-async.txt	/*vim.async.run.Opts.detached*
-vim.async.run.Opts.name	lua-async.txt	/*vim.async.run.Opts.name*
 within	lua-async.txt	/*within*

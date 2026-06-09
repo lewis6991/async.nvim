@@ -614,120 +614,29 @@ vim.async.run(function()
 end)
 ```
 
-## Synchronization Primitives
+## Semaphores
 
-Beyond basic tasks, async.nvim provides several synchronization primitives.
-
-**Futures** bridge callback-based code with async/await.
-A Future is a one-shot placeholder for a value that will be available later:
-
-```lua
-local future = vim.async._future()
-
-some_callback_api(function(result)
-  future:complete(nil, result)
-end)
-
--- Later, wait for the result
-vim.async.run(function()
-  future:wait(function(err, result)
-    print("Got:", result)
-  end)
-end)
-```
-
-**Events** let multiple tasks wait for a signal.
-An event starts unset, tasks block on `wait()`, and when you call `set()` all waiting tasks wake up:
+A semaphore limits how many tasks can enter a section at once.
+This is useful for bounding external concurrency such as requests, processes, or
+file operations.
+Lua code is still cooperative and single-threaded; the limit controls how many
+tasks may be suspended inside the section at the same time.
 
 ```lua
-local event = vim.async._event()
-
--- Multiple waiters
-for i = 1, 5 do
-  vim.async.run(function()
-    event:wait()
-    print("Task", i, "notified")
-  end)
-end
-
--- Signal all
 vim.async.run(function()
-  vim.async.sleep(100)
-  event:set()  -- All 5 tasks wake up
-end)
-```
+  local semaphore = vim.async.semaphore(3)
+  local tasks = {}
 
-**Queues** provide async producer-consumer communication:
-
-```lua
-local queue = vim.async._queue(10)  -- Bounded queue
-
--- Producer
-vim.async.run(function()
-  for i = 1, 100 do
-    queue:put(i)  -- Blocks if queue is full
-  end
-  queue:put(nil)
-end)
-
--- Consumer
-vim.async.run(function()
-  while true do
-    local item = queue:get()  -- Blocks if queue is empty
-    if not item then break end
-    process(item)
-  end
-end)
-```
-
-**Semaphores** limit concurrent access to resources:
-
-```lua
-local semaphore = vim.async.semaphore(3)  -- Max 3 concurrent
-
-local tasks = {}
-for i = 1, 10 do
-  tasks[i] = vim.async.run(function()
-    semaphore:with(function()
-      -- Only 3 tasks can be in this block at once
-      -- (though only 1 actually executes at any moment)
-      expensive_operation(i)
-    end)
-  end)
-end
-```
-
-These primitives compose well.
-You might use a queue to distribute work and a semaphore to limit concurrency:
-
-```lua
-local queue = vim.async._queue()
-local semaphore = vim.async.semaphore(5)
-
-vim.async.run(function()
-  -- Producer
-  vim.async.run(function()
-    for i = 1, 100 do
-      queue:put(work_item(i))
-    end
-  end)
-
-  -- Worker pool
-  local workers = {}
   for i = 1, 10 do
-    workers[i] = vim.async.run(function()
-      while true do
-        local item = queue:get()
-        if not item then break end
-
-        semaphore:with(function()
-          process(item)
-        end)
-      end
+    tasks[i] = vim.async.run(function()
+      semaphore:with(function()
+        -- At most 3 tasks can be inside this section at once.
+        expensive_operation(i)
+      end)
     end)
   end
 
-  vim.async.await_all(workers)
+  vim.async.await_all(tasks)
 end)
 ```
 
@@ -892,43 +801,41 @@ This allows deep recursion in user code without stack overflow.
 
 Here are some common patterns that work well with this concurrency model.
 
-**Racing tasks:** Start multiple tasks and use the first one to complete:
+**Racing tasks:** Start multiple child tasks, take the first result, and close
+the loser:
 
 ```lua
-local parent_task
-parent_task = vim.async.run(function()
-  vim.async.run(function()
-    local result = fetch_from_cache()
-    parent_task:complete(result)
-  end)
+local result = vim.async.run(function()
+  local cache = vim.async.run(fetch_from_cache)
+  local network = vim.async.run(fetch_from_network)
 
-  vim.async.run(function()
-    local result = fetch_from_network()
-    parent_task:complete(result)
-  end)
+  local winner, result = vim.async.await_any({ cache, network })
 
-  -- Wait forever - children will complete the parent
-  vim.async.await(function(_) end)
-end)
+  if winner == 1 then
+    network:close()
+  else
+    cache:close()
+  end
 
-local result = parent_task:wait()
+  return result
+end):wait()
 ```
 
 **Limited concurrency:** Process many items with a concurrency limit:
 
 ```lua
-local semaphore = vim.async.semaphore(5)
-
-local tasks = {}
-for i = 1, 100 do
-  tasks[i] = vim.async.run(function()
-    semaphore:with(function()
-      process_item(i)
-    end)
-  end)
-end
-
 vim.async.run(function()
+  local semaphore = vim.async.semaphore(5)
+  local tasks = {}
+
+  for i = 1, 100 do
+    tasks[i] = vim.async.run(function()
+      semaphore:with(function()
+        process_item(i)
+      end)
+    end)
+  end
+
   vim.async.await_all(tasks)
 end):wait()
 ```
@@ -936,10 +843,9 @@ end):wait()
 **Timeouts:** Wrap operations with a timeout:
 
 ```lua
-local task = vim.async.run(long_operation)
-
-vim.async.run(function()
-  vim.async.timeout(5000, task)
+local result = vim.async.run(function()
+  local task = vim.async.run(long_operation)
+  return vim.async.timeout(5000, task)
 end):wait()
 ```
 
@@ -970,20 +876,21 @@ end)
 background:close()
 ```
 
-**Optional operations:** Try something but fall back if it times out:
-
-Here `pwait()` is just protected synchronous `wait()`, useful at the edge of an
-async tree.
+**Optional operations:** Try something but fall back if it fails or times out:
 
 ```lua
-local optional = vim.async.run(fetch_optional_data)
-local ok, result = optional:pwait(100)
+vim.async.run(function()
+  local ok, result = vim.async.pawait(vim.async.run(function()
+    local optional = vim.async.run(fetch_optional_data)
+    return vim.async.timeout(100, optional)
+  end))
 
-if ok then
-  use_optional_data(result)
-else
-  use_default_data()
-end
+  if ok then
+    use_optional_data(result)
+  else
+    use_default_data()
+  end
+end):wait()
 ```
 
 The structured model makes these patterns safe by default.

@@ -256,7 +256,6 @@ vim.async.run({func}, {...})                                     *async.run()*
 
     Overloads: ~
     - `fun(name: string, func: async fun(...: T ...), ...: T ...) -> vim.async.Task<R ...>`
-    - `fun(opts: vim.async.run.Opts, func: async fun(...: T ...), ...: T ...) -> vim.async.Task<R ...>`
 
     Parameters: ~
     - {func} (`async fun(...: T ...) -> R ...`)
@@ -978,6 +977,7 @@ vim.async.Task:detach()                                  *async.Task:detach()*
     Detach a task from its parent.
 
     The task becomes a top-level task.
+    If it was waiting for a parent checkpoint, it is scheduled to start.
 
     Returns: ~
     - (`vim.async.Task<R>`)
@@ -1059,17 +1059,5 @@ vim.async.Task:status()                                  *async.Task:status()*
 ==============================================================================
 *vim.async.TimerFactory*
     Type: `fun() -> vim.async.Timer
-
-==============================================================================
-*vim.async.run.Opts*
-------------------------------------------------------------------------------
-*vim.async.run.Opts.name*
-    Type: `string?
-
-
-------------------------------------------------------------------------------
-*vim.async.run.Opts.detached*
-    Type: `boolean?
-
 
 vim:tw=78:ts=8:sw=4:sts=4:et:ft=help:norl:

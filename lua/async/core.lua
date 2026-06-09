@@ -376,8 +376,8 @@ end
 --- Name of the task
 --- @field name? string
 ---
---- Mark task for internal use. Used for awaiting children tasks on complete.
---- @field package _internal? string
+--- Hide implementation tasks from user-facing inspection output.
+--- @field package _hidden? boolean
 ---
 --- The source line that created this task, used for inspect().
 --- @field package _caller? string
@@ -403,10 +403,10 @@ do --- Task
   Task.__index = Task
 
   --- @package
-  --- @param func function
-  --- @param opts? vim.async.run.Opts
+  --- @param name? string
+  --- @param func async fun(...: any)
   --- @return vim.async.Task<any>
-  function Task._new(func, opts, ...)
+  function Task._new(name, func, ...)
     local func_args = pack_len(...) --[[@as any[]? ]]
     local thread = coroutine.create(function(marker, err)
       -- Drop the packed vararg table before user code can suspend; otherwise
@@ -417,11 +417,8 @@ do --- Task
       return func(unpack_len(args))
     end)
 
-    opts = opts or {}
-
     local self = setmetatable({
-      name = opts.name,
-      _internal = opts._internal,
+      name = name,
       _closing = false,
       _finalizing_children = false,
       _started = false,
@@ -433,10 +430,6 @@ do --- Task
     }, Task)
 
     threads[thread] = self
-
-    if not (opts and opts.detached) then
-      self:_attach(running())
-    end
 
     return self
   end
@@ -538,6 +531,7 @@ do --- Task
   --- Detach a task from its parent.
   ---
   --- The task becomes a top-level task.
+  --- If it was waiting for a parent checkpoint, it is scheduled to start.
   --- @return vim.async.Task<R>
   function Task:detach()
     local should_start = self._parent and not self._started and not self:completed()
@@ -770,7 +764,7 @@ do --- Task
       self._finalizing_children = true
       -- Only spawn the helper after the no-child path; an empty helper task
       -- would otherwise finalize by recursively spawning another helper.
-      M.run({ _internal = true, detached = true, name = 'await_children' }, function()
+      local await_children = Task._new('await_children', function()
         -- TODO(lewis6991): should we collect all errors?
         local close_remaining = not stat
 
@@ -803,6 +797,8 @@ do --- Task
           self:_finish(unpack_len(finish_args))
         end
       end)
+      await_children._hidden = true
+      await_children:_start()
     end
 
     --- @param thread thread
@@ -1019,27 +1015,21 @@ do --- Task
 end
 
 do --- M.run
-  --- @class vim.async.run.Opts
-  --- @field name? string
-  --- @field detached? boolean
-  --- @field package _internal? boolean
-
   --- @generic T, R
-  --- @param opts? vim.async.run.Opts
+  --- @param name? string
   --- @param func async fun(...: T...): R... Function to run in an async context
   --- @param ... T... Arguments to pass to the function
   --- @return vim.async.Task<R...>
-  local function run(opts, func, ...)
-    validate('opts', opts, 'table', true)
+  local function run(name, func, ...)
     validate('func', func, 'callable')
-    -- TODO(lewis6991): add task names
-    local task = Task._new(func, opts, ...)
+    local task = Task._new(name, func, ...)
+    task:_attach(running())
     local info = debug.getinfo(2, 'Sl')
     if info and info.currentline then
       task._caller = ('%s:%d'):format(info.source, info.currentline)
     end
 
-    -- Top-level and detached tasks have no parent to start them, so they start
+    -- Top-level tasks have no parent checkpoint to start them, so they start
     -- immediately. Attached children start when their parent next reaches an
     -- await checkpoint, or when the parent finishes successfully and implicitly
     -- waits for its children. If the parent errors or closes, pending children
@@ -1074,11 +1064,8 @@ do --- M.run
   --- @param func async fun(...: T...): R...
   --- @return vim.async.Task<R...>
   --- @overload fun(name: string, func: async fun(...: T...), ...: T...): vim.async.Task<R...>
-  --- @overload fun(opts: vim.async.run.Opts, func: async fun(...: T...), ...: T...): vim.async.Task<R...>
   function M.run(func, ...)
     if type(func) == 'string' then
-      return run({ name = func }, ...)
-    elseif type(func) == 'table' then
       return run(func, ...)
     elseif is_callable(func) then
       return run(nil, func, ...)
@@ -1991,14 +1978,14 @@ do --- M._inspect_tree()
     local tasks = {} --- @type table<any, vim.async.Task<any>?>
     if parent then
       for _, task in pairs(parent._children) do
-        if not task._internal then
+        if not task._hidden then
           tasks[#tasks + 1] = task
         end
       end
     else
       -- Gather for all detached tasks
       for _, task in pairs(threads) do
-        if not task._parent and not task._internal then
+        if not task._parent and not task._hidden then
           tasks[#tasks + 1] = task
         end
       end
