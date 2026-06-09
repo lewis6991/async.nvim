@@ -434,12 +434,6 @@ do --- Task
     return self
   end
 
-  --- @package
-  --- @param cb fun(err?: any, ...: any)
-  function Task:_unwait(cb)
-    self._future:_remove_cb(cb)
-  end
-
   --- Returns whether the Task has completed.
   --- @return boolean
   function Task:completed()
@@ -453,9 +447,10 @@ do --- Task
   ---
   --- This only observes completion. It does not start a pending task.
   --- @param callback fun(err?: any, ...: R...)
+  --- @return fun() unsubscribe
   function Task:on_complete(callback)
     validate('callback', callback, 'callable')
-    self._future:wait(callback)
+    return self._future:on_complete(callback)
   end
 
   --- Synchronously wait for the Task to complete.
@@ -1128,7 +1123,7 @@ do --- M.await()
     elseif is_task(arg1) then
       --- @param callback fun(err?: any, ...: any)
       return function(callback)
-        arg1._future:wait(callback)
+        arg1._future:on_complete(callback)
         return arg1
       end
     else
@@ -1314,13 +1309,12 @@ do --- M.iter(), M.await_all()
     local remaining = #tasks
     local queue = M._queue()
 
-    -- Keep track of the callbacks so we can remove them when the iterator
-    -- is garbage collected.
-    --- @type table<vim.async.Task<any>, function>
-    local task_cbs = setmetatable({}, { __mode = 'v' })
+    -- Keep track of subscriptions so the iterator can stop observing tasks
+    -- when it is garbage collected before all tasks complete.
+    --- @type fun()[]
+    local unsubscribe = {}
 
-    -- Observe all the tasks. Keep the callbacks so they can be removed when
-    -- the iterator is garbage collected.
+    -- Observe all the tasks.
     for i, task in ipairs(tasks) do
       --- @param err? any
       --- @param ... R
@@ -1332,8 +1326,7 @@ do --- M.iter(), M.await_all()
         end
       end
 
-      task_cbs[task] = cb
-      task:on_complete(cb)
+      unsubscribe[#unsubscribe + 1] = task:on_complete(cb)
     end
 
     --- @async
@@ -1350,8 +1343,8 @@ do --- M.iter(), M.await_all()
         return unpack_len(r, 2)
       end
     end, function()
-      for t, tcb in pairs(task_cbs) do
-        t:_unwait(tcb)
+      for _, unsub in ipairs(unsubscribe) do
+        unsub()
       end
     end)
   end
@@ -1539,13 +1532,20 @@ do --- M._future()
   --- If the Future is already done when this method is called, the callback is
   --- called immediately with the results.
   --- @param callback fun(err?: any, ...: any)
-  function Future:wait(callback)
+  --- @return fun() unsubscribe
+  function Future:on_complete(callback)
     if self:completed() then
       -- Already completed or closed
       callback(self._err, unpack_len(self._result))
-    else
-      self._callbacks[self._callback_pos] = callback
-      self._callback_pos = self._callback_pos + 1
+      return function() end
+    end
+
+    local id = self._callback_pos
+    self._callback_pos = id + 1
+    self._callbacks[id] = callback
+
+    return function()
+      self._callbacks[id] = nil
     end
   end
 
@@ -1570,9 +1570,12 @@ do --- M._future()
       self._result = pack_len(...)
     end
 
+    local callbacks = self._callbacks
+    self._callbacks = {}
+
     local errs = {} --- @type string[]
     -- Need to use pairs to avoid gaps caused by removed callbacks
-    for _, cb in pairs(self._callbacks) do
+    for _, cb in pairs(callbacks) do
       local ok, cb_err = pcall(cb, err, ...)
       if not ok then
         errs[#errs + 1] = tostring(normalize_error(cb_err))
@@ -1581,18 +1584,6 @@ do --- M._future()
 
     if #errs > 0 then
       error(table.concat(errs, '\n'), 0)
-    end
-  end
-
-  --- @package
-  --- Removes a callback from the Future.
-  --- @param cb fun(err?: any, ...: any)
-  function Future:_remove_cb(cb)
-    for j, fcb in pairs(self._callbacks) do
-      if fcb == cb then
-        self._callbacks[j] = nil
-        break
-      end
     end
   end
 

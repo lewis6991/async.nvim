@@ -659,7 +659,7 @@ vim.async.Future:result()                              *async.Future:result()*
     - {error} (`any ...`): or result
 
 ------------------------------------------------------------------------------
-vim.async.Future:wait({callback})                        *async.Future:wait()*
+vim.async.Future:on_complete({callback})          *async.Future:on_complete()*
 
     Add a callback to be run when the Future is done.
 
@@ -673,6 +673,8 @@ vim.async.Future:wait({callback})                        *async.Future:wait()*
     Parameters: ~
     - {callback} (`fun(err: any, ...: any)`)
 
+    Returns: ~
+    - {unsubscribe} (`fun()`)
 
 ------------------------------------------------------------------------------
 vim.async.Future:complete({err}, {...})              *async.Future:complete()*
@@ -888,6 +890,8 @@ vim.async.Task:on_complete({callback})              *async.Task:on_complete()*
     Parameters: ~
     - {callback} (`fun(err: any, ...: R ...)`)
 
+    Returns: ~
+    - {unsubscribe} (`fun()`)
 
 ------------------------------------------------------------------------------
 vim.async.Task:wait({timeout})                             *async.Task:wait()*

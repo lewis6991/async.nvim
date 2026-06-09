@@ -1831,7 +1831,7 @@ parent@test/async_spec.lua:%d+ %[awaiting%]
 
     it_exec('normalizes nil future callback errors', function()
       local future = Async._future()
-      future:wait(function()
+      future:on_complete(function()
         error()
       end)
 

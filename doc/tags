@@ -4,8 +4,8 @@ async.Event:set()	lua-async.txt	/*async.Event:set()*
 async.Event:wait()	lua-async.txt	/*async.Event:wait()*
 async.Future:complete()	lua-async.txt	/*async.Future:complete()*
 async.Future:completed()	lua-async.txt	/*async.Future:completed()*
+async.Future:on_complete()	lua-async.txt	/*async.Future:on_complete()*
 async.Future:result()	lua-async.txt	/*async.Future:result()*
-async.Future:wait()	lua-async.txt	/*async.Future:wait()*
 async.Queue:get()	lua-async.txt	/*async.Queue:get()*
 async.Queue:get_nowait()	lua-async.txt	/*async.Queue:get_nowait()*
 async.Queue:max_size()	lua-async.txt	/*async.Queue:max_size()*
