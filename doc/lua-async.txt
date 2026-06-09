@@ -300,8 +300,8 @@ vim.async.await({...})                                         *async.await()*
     Do not use raw `pcall` to recover from `await()` or any function that may
     suspend. Child task failures and cancellation are delivered through Lua
     errors too, so `pcall` cannot tell them apart from ordinary local failures.
-    Catch only synchronous work, use `pcall` only for cleanup before rethrowing,
-    or handle async failures at task boundaries.
+    Catch only synchronous work, use `pcall` only for non-suspending cleanup
+    before rethrowing, or handle async failures at task boundaries.
 
     Attributes: ~
     - `async`
@@ -323,11 +323,13 @@ vim.async.await({...})                                         *async.await()*
 ------------------------------------------------------------------------------
 vim.async.pawait({...})                                       *async.pawait()*
 
-    Await an operation and return its failure as data.
+    Await an operation and return checkpoint failure as data.
 
     `pawait()` accepts the same forms as `await()`, but returns `false, err`
-    when the awaited operation itself fails. This is the recovery boundary for
-    optional child work:
+    when the await checkpoint receives an error. This includes failure from
+    the awaited operation, cancellation of the current task, and already
+    pending task failure. This is the recovery boundary for optional child
+    work:
 
     >lua
     vim.async.run(function()
@@ -339,10 +341,15 @@ vim.async.pawait({...})                                       *async.pawait()*
     end)
 <
 
-    `pawait()` is not `pcall()` for async code. It does not protect the parent
-    task from cancellation or from failures in unrelated children. For callback
-    overloads, callback values are treated exactly like `await()` results and
-    are only prefixed with `ok`; they are not interpreted as errors.
+    `pawait()` is not `pcall()` for async code. Returning `false, err` does
+    not clear cancellation or pending failure from the current task, so cleanup
+    can run but the task still completes as failed/closed unless the failure
+    belongs to the awaited operation itself. Use `is_closing()` to distinguish
+    cancellation from ordinary awaited-operation failure.
+
+    For callback overloads, callback values are treated exactly like `await()`
+    results and are only prefixed with `ok`; they are not interpreted as
+    errors.
 
     When passed a pending child task, `pawait()` starts the task after the
     parent is marked as awaiting it, so synchronous child failures are captured
@@ -363,9 +370,6 @@ vim.async.pawait({...})                                       *async.pawait()*
     Parameters: ~
     - {...} (`any`): see overloads
 
-    Returns: ~
-    - {ok} (`boolean`)
-    - {err_or_result} (`(any|R ...)`)
 
 ------------------------------------------------------------------------------
 vim.async.is_closing()                                    *async.is_closing()*

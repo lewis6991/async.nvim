@@ -1245,6 +1245,21 @@ parent@test/async_spec.lua:%d+ %[awaiting%]
       eq('parent ok', parent:wait(100))
     end)
 
+    it_exec('pawait returns awaitable setup errors as data', function()
+      local parent = run(function()
+        local ok, err = Async.pawait(function(_callback)
+          error()
+        end)
+
+        eq(false, ok)
+        eq('error(nil)', err)
+
+        return 'parent ok'
+      end)
+
+      eq('parent ok', parent:wait(100))
+    end)
+
     it_exec('pawait returns synchronous child errors as data', function()
       local results = {}
       local parent = run(function()
@@ -1304,19 +1319,25 @@ parent@test/async_spec.lua:%d+ %[awaiting%]
       }, results)
     end)
 
-    it_exec('pawait keeps parent cancellation terminal', function()
+    it_exec('pawait returns parent cancellation as data and keeps it terminal', function()
       local results = {}
       local child --- @type vim.async.Task
       local parent = run(function()
         child = run(eternity)
 
-        local ok = pcall(function()
-          Async.pawait(child)
+        local ok, err = Async.pawait(child)
+
+        eq(false, ok)
+        results[#results + 1] = err == 'closed' and 'pawait_closed' or 'other_error'
+        results[#results + 1] = Async.is_closing() and 'is_closing' or 'not_closing'
+
+        local ok2, err2 = Async.pawait(function(callback)
+          vim.schedule(callback)
         end)
 
-        results[#results + 1] = ok and 'pawait_ok' or 'pawait_error'
-        Async.sleep(1)
-        results[#results + 1] = 'should_not_reach'
+        eq(false, ok2)
+        results[#results + 1] = err2 == 'closed' and 'second_pawait_closed' or 'second_other'
+        results[#results + 1] = 'cleanup'
       end)
 
       run(function()
@@ -1326,7 +1347,59 @@ parent@test/async_spec.lua:%d+ %[awaiting%]
 
       check_task_err(parent, 'closed')
       check_task_err(child, 'closed')
-      eq({ 'pawait_error' }, results)
+      eq({
+        'pawait_closed',
+        'is_closing',
+        'second_pawait_closed',
+        'cleanup',
+      }, results)
+    end)
+
+    it_exec('pawait returns unrelated child errors as data and keeps them terminal', function()
+      local results = {}
+      local parent = run(function()
+        local _child = run(function()
+          Async.sleep(5)
+          error('CHILD ERROR')
+        end)
+
+        local ok, err = Async.pawait(function(callback)
+          local timer = add_handle('pending_child_error_timer', vim.uv.new_timer())
+          timer:start(100, 0, function()
+            timer:close()
+            callback('done')
+          end)
+          return timer
+        end)
+
+        eq(false, ok)
+        --- @cast err string
+        results[#results + 1] = err:match('child error:.*CHILD ERROR') and 'child_error'
+          or 'other_error'
+        results[#results + 1] = Async.is_closing() and 'is_closing' or 'not_closing'
+
+        local ok2, err2 = Async.pawait(function(callback)
+          vim.schedule(callback)
+        end)
+
+        eq(false, ok2)
+        --- @cast err2 string
+        results[#results + 1] = err2:match('child error:.*CHILD ERROR') and 'child_error_again'
+          or 'other_error_again'
+        results[#results + 1] = 'returned'
+      end)
+
+      local ok, err = parent:pwait(200)
+      eq(false, ok)
+      --- @cast err string
+      assert(err:match('child error:.*CHILD ERROR'), 'Expected child error, got: ' .. tostring(err))
+
+      eq({
+        'child_error',
+        'not_closing',
+        'child_error_again',
+        'returned',
+      }, results)
     end)
 
     it_exec('cancellations are level-triggered (persist across catches)', function()

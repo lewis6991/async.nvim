@@ -293,6 +293,21 @@ local function normalize_error(err)
   return err == nil and nil_error or err
 end
 
+--- @return vim.async.Task<any>
+local function current_task()
+  return (assert(running(), 'Not in async context'))
+end
+
+--- @param marker any
+local function check_resume(marker)
+  if marker ~= resume_marker then
+    current_task():_raise(resume_error)
+    -- Return an error to the caller. This will also leave the task in a dead
+    -- and unfinished state
+    error(resume_error, 0)
+  end
+end
+
 --- Checks the arguments of a `coroutine.resume`.
 --- This is used to ensure that a resume is expected.
 --- @generic T
@@ -301,16 +316,34 @@ end
 --- @param ... T...
 --- @return T...
 local function check_yield(marker, err, ...)
-  if marker ~= resume_marker then
-    local task = assert(running(), 'Not in async context')
-    task:_raise(resume_error)
-    -- Return an error to the caller. This will also leave the task in a dead
-    -- and unfinished state
-    error(resume_error, 0)
-  elseif err ~= nil then
+  check_resume(marker)
+  if err ~= nil then
     error(err, 0)
   end
   return ...
+end
+
+--- Like check_yield(), but reports delivered async errors as data.
+--- @generic T
+--- @param marker any
+--- @param err? any
+--- @param ok boolean
+--- @param ... T...
+--- @return_overload true, T...
+--- @return_overload false, any
+local function check_pyield(marker, err, ok, ...)
+  check_resume(marker)
+  if err ~= nil then
+    -- Scheduler delivery: cancellation, pending task failure, or awaitable
+    -- setup/close failure.
+    return false, err
+  end
+  if ok then
+    return true, ...
+  end
+  -- Protected awaitable result: `false, ...` is already the public pawait()
+  -- shape and must not be promoted into the scheduler error slot.
+  return false, ...
 end
 
 --- @class vim.async.Closable
@@ -1074,14 +1107,12 @@ do --- M.await()
     end
   end
 
-  --- Get the current task, failing before we yield if it is closing or failed.
-  ---
-  --- This check sits outside `to_awaitable()` because `pawait()` may wrap the
-  --- awaited operation's result, but it must not wrap cancellation or a child
-  --- error that is already pending on the parent task.
+  --- Get the current task, failing before `await()` yields if it is closing or
+  --- failed. `pawait()` uses `current_task()` directly because it reports
+  --- checkpoint errors as data.
   --- @return vim.async.Task<any>
   local function check_current_task()
-    local task = assert(running(), 'Not in async context')
+    local task = current_task()
 
     if task._closing then
       error('closed', 0)
@@ -1150,8 +1181,8 @@ do --- M.await()
   --- Do not use raw `pcall` to recover from `await()` or any function that may
   --- suspend. Child task failures and cancellation are delivered through Lua
   --- errors too, so `pcall` cannot tell them apart from ordinary local failures.
-  --- Catch only synchronous work, use `pcall` only for cleanup before rethrowing,
-  --- or handle async failures at task boundaries.
+  --- Catch only synchronous work, use `pcall` only for non-suspending cleanup
+  --- before rethrowing, or handle async failures at task boundaries.
   --- @async
   --- @generic T, R
   --- @param ... any see overloads
@@ -1164,11 +1195,13 @@ do --- M.await()
     return check_yield(coroutine.yield(yield_marker, to_awaitable(...)))
   end
 
-  --- Await an operation and return its failure as data.
+  --- Await an operation and return checkpoint failure as data.
   ---
   --- `pawait()` accepts the same forms as `await()`, but returns `false, err`
-  --- when the awaited operation itself fails. This is the recovery boundary for
-  --- optional child work:
+  --- when the await checkpoint receives an error. This includes failure from
+  --- the awaited operation, cancellation of the current task, and already
+  --- pending task failure. This is the recovery boundary for optional child
+  --- work:
   ---
   --- ```lua
   --- vim.async.run(function()
@@ -1180,10 +1213,15 @@ do --- M.await()
   --- end)
   --- ```
   ---
-  --- `pawait()` is not `pcall()` for async code. It does not protect the parent
-  --- task from cancellation or from failures in unrelated children. For callback
-  --- overloads, callback values are treated exactly like `await()` results and
-  --- are only prefixed with `ok`; they are not interpreted as errors.
+  --- `pawait()` is not `pcall()` for async code. Returning `false, err` does
+  --- not clear cancellation or pending failure from the current task, so cleanup
+  --- can run but the task still completes as failed/closed unless the failure
+  --- belongs to the awaited operation itself. Use `is_closing()` to distinguish
+  --- cancellation from ordinary awaited-operation failure.
+  ---
+  --- For callback overloads, callback values are treated exactly like `await()`
+  --- results and are only prefixed with `ok`; they are not interpreted as
+  --- errors.
   ---
   --- When passed a pending child task, `pawait()` starts the task after the
   --- parent is marked as awaiting it, so synchronous child failures are captured
@@ -1195,34 +1233,36 @@ do --- M.await()
   --- @overload async fun(func: (fun(callback: fun(...: R...)): vim.async.Closable?)): boolean, R...
   --- @overload async fun(argc: integer, func: (fun(...: T..., callback: fun(...: R...)): vim.async.Closable?), ...: T...): boolean, R...
   --- @overload async fun(task: vim.async.Task<R>): boolean, R...
-  --- @return boolean ok
-  --- @return any|R... err_or_result
+  --- @return_overload true, R...
+  --- @return_overload false, any
   function M.pawait(...)
-    local current = check_current_task()
+    local current = current_task()
+    if current._closing then
+      return false, 'closed'
+    elseif current._error ~= nil then
+      return false, current._error
+    end
+
     local awaitable = to_awaitable(...)
 
     --- @param callback fun(err?: any, ok?: boolean, ...: any)
     local function protected_awaitable(callback)
-      -- Only protect the awaited operation's error slot. Errors injected
-      -- directly into this task, such as cancellation or unrelated child
-      -- failures, bypass this wrapper and stay terminal.
       return awaitable(function(err, ...)
-        if err ~= nil then
-          if current._closing then
-            callback('closed')
-          elseif current._error ~= nil then
-            callback(current._error)
-          else
-            callback(nil, false, err)
-          end
+        -- Task-control state wins over the awaited operation result. pawait()
+        -- reports that state as data, but it does not clear it.
+        if current._closing then
+          callback('closed')
+        elseif current._error ~= nil then
+          callback(current._error)
+        elseif err ~= nil then
+          callback(nil, false, err)
         else
           callback(nil, true, ...)
         end
       end)
     end
 
-    --- @diagnostic disable-next-line: return-type-mismatch
-    return check_yield(coroutine.yield(yield_marker, protected_awaitable))
+    return check_pyield(coroutine.yield(yield_marker, protected_awaitable))
   end
 end
 
@@ -1283,7 +1323,7 @@ do --- M.iter(), M.await_all(), M.await_any()
     validate('tasks', tasks, 'table')
 
     -- TODO(lewis6991): do not return err, instead raise any errors as they occur
-    assert(running(), 'Not in async context')
+    current_task()
 
     local remaining = #tasks
     local queue = M._queue()
@@ -1410,7 +1450,7 @@ do --- M.iter(), M.await_all(), M.await_any()
   --- @param tasks vim.async.Task<any>[]
   --- @return table<integer, [any?, ...?]>
   function M.await_all(tasks)
-    assert(running(), 'Not in async context')
+    current_task()
     local itr = iter(tasks)
     local results = {} --- @type table<integer, table>
 
