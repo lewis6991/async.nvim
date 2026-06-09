@@ -73,7 +73,7 @@ intrusive and easier to integrate with existing synchronous code, despite
 - **Callback Wrapping:** Convert traditional callback-based functions into
   modern async functions with `vim.async.wrap()`.
 
-- **Concurrency Utilities:** `await_all`, `await_any`, and `iter` provide
+- **Concurrency Utilities:** `await_all` and `iter` provide
   powerful tools for managing groups of tasks.
 
 - **Synchronization Primitives:** `event`, `queue`, and `semaphore` are
@@ -426,11 +426,9 @@ vim.async.iter({tasks})                                         *async.iter()*
 
     This function allows you to run multiple asynchronous tasks concurrently and
     process their results as they complete. It returns an iterator function that
-    yields the index of the task, any error encountered, and the results of the
-    task.
+    yields the index of the task and the results of the task.
 
-    If a task completes with an error, the error is returned as the second
-    value. Otherwise, the results of the task are returned as subsequent values.
+    If a task completes with an error, the iterator raises that error.
 
     Example:
     >lua
@@ -442,22 +440,17 @@ vim.async.iter({tasks})                                         *async.iter()*
       return 2, 'b'
     end)
 
-    local task3 = vim.async.run(function()
-      error('task3 error')
-    end)
-
     vim.async.run(function()
-      for i, err, r1, r2 in vim.async.iter({task1, task2, task3}) do
-        print(i, err, r1, r2)
+      for i, r1, r2 in vim.async.iter({task1, task2}) do
+        print(i, r1, r2)
       end
     end)
 <
 
     Prints:
 <
-    1 nil 1 'a'
-    2 nil 2 'b'
-    3 'task3 error' nil nil
+    1 1 'a'
+    2 2 'b'
 <
 
     Attributes: ~
@@ -470,7 +463,7 @@ vim.async.iter({tasks})                                         *async.iter()*
     - {tasks} (`vim.async.Task<R>[]`): A list of tasks to wait for and iterate over.
 
     Returns: ~
-    - {iterator} (`async fun() -> (integer?,any,R ...)`): that yields the index, error, and results of each task.
+    - {iterator} (`async fun() -> (integer?,R ...)`): that yields the index and results of each task.
 
 ------------------------------------------------------------------------------
 vim.async.await_all({tasks})                               *async.await_all()*
@@ -487,12 +480,8 @@ vim.async.await_all({tasks})                               *async.await_all()*
       return 1, 'a'
     end)
 
-    local task3 = vim.async.run(function()
-      error('task3 error')
-    end)
-
     vim.async.run(function()
-      local results = vim.async.await_all({task1, task2, task3})
+      local results = vim.async.await_all({task1, task2})
       print(vim.inspect(results))
     end)
 <
@@ -500,9 +489,8 @@ vim.async.await_all({tasks})                               *async.await_all()*
     Prints:
 <
     {
-      |1| = { nil, 1, 'a' },
-      |2| = { nil, 2, 'b' },
-      |3| = { 'task2 error' },
+      |1| = { 1, 'a' },
+      |2| = { 2, 'b' },
     }
 <
 
@@ -514,42 +502,6 @@ vim.async.await_all({tasks})                               *async.await_all()*
 
     Returns: ~
     - (`table<integer,unknown>`)
-
-------------------------------------------------------------------------------
-vim.async.await_any({tasks})                               *async.await_any()*
-
-    Wait for the first task to complete and return its result.
-
-    Example:
-    >lua
-    local task1 = vim.async.run(function()
-      vim.async.sleep(100)
-      return 1, 'a'
-    end)
-
-    local task2 = vim.async.run(function()
-      return 2, 'b'
-    end)
-
-    vim.async.run(function()
-      local i, err, r1, r2 = vim.async.await_any({task1, task2})
-      assert(i == 2)
-      assert(err == nil)
-      assert(r1 == 2)
-      assert(r2 == 'b')
-    end)
-<
-
-    Attributes: ~
-    - `async`
-
-    Parameters: ~
-    - {tasks} (`vim.async.Task<any>[]`)
-
-    Returns: ~
-    - {index} (`integer?`)
-    - {err} (`any`)
-    - {results} (`any ...`)
 
 ------------------------------------------------------------------------------
 vim.async.sleep({duration})                                    *async.sleep()*

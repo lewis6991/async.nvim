@@ -96,7 +96,7 @@ local _runtime = {}
 --- - **Callback Wrapping:** Convert traditional callback-based functions into
 ---   modern async functions with `vim.async.wrap()`.
 ---
---- - **Concurrency Utilities:** `await_all`, `await_any`, and `iter` provide
+--- - **Concurrency Utilities:** `await_all` and `iter` provide
 ---   powerful tools for managing groups of tasks.
 ---
 --- - **Synchronization Primitives:** `event`, `queue`, and `semaphore` are
@@ -1301,15 +1301,14 @@ function M.wrap(argc, func)
   end
 end
 
-do --- M.iter(), M.await_all(), M.await_any()
+do --- M.iter(), M.await_all()
   --- @async
   --- @generic R
   --- @param tasks vim.async.Task<R>[] A list of tasks to wait for and iterate over.
-  --- @return async fun(): (integer?, any?, R...) iterator that yields the index, error, and results of each task.
+  --- @return async fun(): (integer?, R...) iterator that yields the index and results of each task.
   local function iter(tasks)
     validate('tasks', tasks, 'table')
 
-    -- TODO(lewis6991): do not return err, instead raise any errors as they occur
     current_task()
 
     local remaining = #tasks
@@ -1361,11 +1360,9 @@ do --- M.iter(), M.await_all(), M.await_any()
   ---
   --- This function allows you to run multiple asynchronous tasks concurrently and
   --- process their results as they complete. It returns an iterator function that
-  --- yields the index of the task, any error encountered, and the results of the
-  --- task.
+  --- yields the index of the task and the results of the task.
   ---
-  --- If a task completes with an error, the error is returned as the second
-  --- value. Otherwise, the results of the task are returned as subsequent values.
+  --- If a task completes with an error, the iterator raises that error.
   ---
   --- Example:
   --- ```lua
@@ -1377,28 +1374,23 @@ do --- M.iter(), M.await_all(), M.await_any()
   ---   return 2, 'b'
   --- end)
   ---
-  --- local task3 = vim.async.run(function()
-  ---   error('task3 error')
-  --- end)
-  ---
   --- vim.async.run(function()
-  ---   for i, err, r1, r2 in vim.async.iter({task1, task2, task3}) do
-  ---     print(i, err, r1, r2)
+  ---   for i, r1, r2 in vim.async.iter({task1, task2}) do
+  ---     print(i, r1, r2)
   ---   end
   --- end)
   --- ```
   ---
   --- Prints:
   --- ```
-  --- 1 nil 1 'a'
-  --- 2 nil 2 'b'
-  --- 3 'task3 error' nil nil
+  --- 1 1 'a'
+  --- 2 2 'b'
   --- ```
   ---
   --- @async
   --- @generic R
   --- @param tasks vim.async.Task<R>[] A list of tasks to wait for and iterate over.
-  --- @return async fun(): (integer?, any?, R...) iterator that yields the index, error, and results of each task.
+  --- @return async fun(): (integer?, R...) iterator that yields the index and results of each task.
   function M.iter(tasks)
     return iter(tasks)
   end
@@ -1415,12 +1407,8 @@ do --- M.iter(), M.await_all(), M.await_any()
   ---   return 1, 'a'
   --- end)
   ---
-  --- local task3 = vim.async.run(function()
-  ---   error('task3 error')
-  --- end)
-  ---
   --- vim.async.run(function()
-  ---   local results = vim.async.await_all({task1, task2, task3})
+  ---   local results = vim.async.await_all({task1, task2})
   ---   print(vim.inspect(results))
   --- end)
   --- ```
@@ -1428,9 +1416,8 @@ do --- M.iter(), M.await_all(), M.await_any()
   --- Prints:
   --- ```
   --- {
-  ---   [1] = { nil, 1, 'a' },
-  ---   [2] = { nil, 2, 'b' },
-  ---   [3] = { 'task2 error' },
+  ---   [1] = { 1, 'a' },
+  ---   [2] = { 2, 'b' },
   --- }
   --- ```
   --- @async
@@ -1455,36 +1442,6 @@ do --- M.iter(), M.await_all(), M.await_any()
     end
 
     return results
-  end
-
-  --- Wait for the first task to complete and return its result.
-  ---
-  --- Example:
-  --- ```lua
-  --- local task1 = vim.async.run(function()
-  ---   vim.async.sleep(100)
-  ---   return 1, 'a'
-  --- end)
-  ---
-  --- local task2 = vim.async.run(function()
-  ---   return 2, 'b'
-  --- end)
-  ---
-  --- vim.async.run(function()
-  ---   local i, err, r1, r2 = vim.async.await_any({task1, task2})
-  ---   assert(i == 2)
-  ---   assert(err == nil)
-  ---   assert(r1 == 2)
-  ---   assert(r2 == 'b')
-  --- end)
-  --- ```
-  --- @async
-  --- @param tasks vim.async.Task<any>[]
-  --- @return integer? index
-  --- @return any? err
-  --- @return any ... results
-  function M.await_any(tasks)
-    return iter(tasks)()
   end
 end
 
@@ -1522,7 +1479,7 @@ function M.timeout(duration, task)
     t:start(duration, 0, callback)
     return t
   end)
-  if M.await_any({ task, timer }) == 2 then
+  if M.iter({ task, timer })() == 2 then
     -- Timer completed first, close the task
     task:close()
     error('timeout')

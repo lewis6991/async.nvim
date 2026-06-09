@@ -27,7 +27,6 @@ async.Task:traceback()	lua-async.txt	/*async.Task:traceback()*
 async.Task:wait()	lua-async.txt	/*async.Task:wait()*
 async.await()	lua-async.txt	/*async.await()*
 async.await_all()	lua-async.txt	/*async.await_all()*
-async.await_any()	lua-async.txt	/*async.await_any()*
 async.init()	lua-async.txt	/*async.init()*
 async.is_closing()	lua-async.txt	/*async.is_closing()*
 async.iter()	lua-async.txt	/*async.iter()*

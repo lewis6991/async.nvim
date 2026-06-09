@@ -809,7 +809,8 @@ local result = vim.async.run(function()
   local cache = vim.async.run(fetch_from_cache)
   local network = vim.async.run(fetch_from_network)
 
-  local winner, result = vim.async.await_any({ cache, network })
+  local next_result = vim.async.iter({ cache, network })
+  local winner, result = next_result()
 
   if winner == 1 then
     network:close()
