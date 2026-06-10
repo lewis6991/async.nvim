@@ -7,9 +7,20 @@ local async = require('async._core')
 --- set to `false` initially.
 --- @class vim.async.Event
 --- @field private _is_set boolean
---- @field private _waiters function[]
+--- @field private _waiters (function|false)[]
 local Event = {}
 Event.__index = Event
+
+--- @param waiters (function|false)[]
+--- @return boolean
+local function has_waiters(waiters)
+  for _, waiter in ipairs(waiters) do
+    if waiter then
+      return true
+    end
+  end
+  return false
+end
 
 --- Set the event.
 ---
@@ -27,9 +38,12 @@ function Event:set(max_woken)
   local waiters_to_notify = {} --- @type function[]
   max_woken = max_woken or #waiters
   while #waiters > 0 and #waiters_to_notify < max_woken do
-    waiters_to_notify[#waiters_to_notify + 1] = table.remove(waiters, 1)
+    local waiter = table.remove(waiters, 1)
+    if waiter then
+      waiters_to_notify[#waiters_to_notify + 1] = waiter
+    end
   end
-  if #waiters > 0 then
+  if has_waiters(waiters) then
     self._is_set = false
   end
   for _, waiter in ipairs(waiters_to_notify) do
@@ -48,6 +62,21 @@ function Event:wait()
       callback()
     else
       table.insert(self._waiters, callback)
+      return {
+        close = function(_, on_close)
+          -- set() compacts the waiter list, so cancellation cannot rely on the
+          -- original insertion index still pointing at this callback.
+          for i, waiter in ipairs(self._waiters) do
+            if waiter == callback then
+              self._waiters[i] = false
+              break
+            end
+          end
+          if on_close then
+            on_close()
+          end
+        end,
+      }
     end
   end)
 end

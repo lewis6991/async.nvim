@@ -1055,6 +1055,33 @@ stack traceback:
 
       eq({ 'ping', 'pong', 'ping', 'pong', 'ping', 'pong', 'ping', 'pong', 'ping', 'pong' }, msgs)
     end)
+
+    it_exec('does not lose a semaphore wake after closing a waiter', function()
+      local sem = Async.semaphore(1)
+      local second_acquired = false
+
+      run(function()
+        sem:acquire()
+
+        local first = run(function()
+          sem:acquire()
+        end)
+
+        local second = run(function()
+          sem:acquire()
+          second_acquired = true
+        end)
+
+        Async.checkpoint()
+        first:close()
+        Async.pawait(first)
+
+        sem:release()
+        await(second)
+      end):wait(100)
+
+      eq(true, second_acquired)
+    end)
   end)
 
   describe('coroutine safety', function()
