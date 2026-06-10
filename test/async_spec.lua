@@ -290,6 +290,46 @@ stack traceback:
       assert(tb:match(m), 'ERROR: ' .. tb)
     end)
 
+    it_exec('does not keep completed awaited tasks in later tracebacks', function()
+      for _, await_child in ipairs({
+        function()
+          await(run(function()
+            return 'done'
+          end))
+        end,
+        function()
+          local ok = Async.pawait(run(function()
+            error('child error')
+          end))
+          eq(false, ok)
+        end,
+      }) do
+        local task = run(function()
+          await_child()
+          error('parent error')
+        end)
+
+        local err = check_task_err(task, 'test/async_spec.lua:%d+: parent error')
+        local tb = task:traceback(err)
+
+        assert(tb:match("%[C%]: in function 'error'"), 'ERROR: ' .. tb)
+        assert(not tb:match('child error'), 'ERROR: ' .. tb)
+        assert(not tb:match('stack traceback:\nstack traceback:'), 'ERROR: ' .. tb)
+      end
+    end)
+
+    it_exec('does not print nil for tracebacks without a message', function()
+      local task = run(function()
+        await(function() end)
+      end)
+
+      local tb = task:traceback()
+      assert(not tb:match('^nil\n'), 'ERROR: ' .. tb)
+
+      task:close()
+      check_task_err(task, 'closed')
+    end)
+
     it_exec('does not need new stack frame for non-deferred continuations', function()
       --- @async
       local function deep(n)

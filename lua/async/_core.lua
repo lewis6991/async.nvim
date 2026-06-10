@@ -263,7 +263,7 @@ do --- Task
     end
 
     local tblvl = is_task(awaiting) and 2 or nil
-    msg = (tostring(msg) or '')
+    msg = (msg == nil and '' or tostring(msg))
       .. debug.traceback(self._thread, '', tblvl):gsub('\n\t', '\n\t' .. thread)
 
     if level == 0 then
@@ -595,6 +595,13 @@ do --- Task
       -- Run this block in a while loop to run non-deferred continuations
       -- without a new stack frame.
       while args do
+        if args[1] == nil and is_task(self._awaiting) and self._awaiting:completed() then
+          -- A completed child is traceback context only while its error is
+          -- being delivered through raw await(). Successful and protected
+          -- resumes must not let that old child hide this task's own frames.
+          self._awaiting = nil
+        end
+
         local should_return, close_err_args = handle_close_awaiting(self, self._awaiting, function()
           self:_resume(unpack_len(args))
         end)
