@@ -1,6 +1,5 @@
 local M = {}
 
--- Match Neovim's `vim._maxint` sentinel for "effectively no timeout".
 M._maxint = 2 ^ 32 - 1
 
 --- @param obj any

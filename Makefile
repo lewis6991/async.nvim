@@ -46,7 +46,7 @@ $(STYLUA_ZIP):
 stylua: $(STYLUA_ZIP)
 	unzip $<
 
-FILES = lua/*.lua test/*.lua scripts/*.lua
+FILES = lua/*.lua lua/async/*.lua test/*.lua scripts/*.lua
 
 .PHONY: format-check
 format-check: stylua

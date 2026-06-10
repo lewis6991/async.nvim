@@ -219,6 +219,26 @@ describe('async', function()
       }, results)
     end)
 
+    it_exec('child tasks start at an explicit checkpoint', function()
+      local results = {}
+
+      run(function()
+        run(function()
+          results[#results + 1] = 'child_started'
+        end)
+
+        results[#results + 1] = 'before_checkpoint'
+        Async.checkpoint()
+        results[#results + 1] = 'after_checkpoint'
+      end):wait(100)
+
+      eq({
+        'before_checkpoint',
+        'child_started',
+        'after_checkpoint',
+      }, results)
+    end)
+
     it_exec('handles tasks that complete', function()
       local task = run(function()
         -- should wait for 1 ms
@@ -312,11 +332,11 @@ stack traceback:
       local ok, err = xpcall(function()
         local chunk = assert(loadfile('lua/async.lua'))
         local function require_fresh(name)
-          if name ~= 'async.core' then
+          if name ~= 'async._core' then
             return require(name)
           end
 
-          local core_chunk = assert(loadfile('lua/async/core.lua'))
+          local core_chunk = assert(loadfile('lua/async/_core.lua'))
           setfenv(
             core_chunk,
             setmetatable({
@@ -349,6 +369,7 @@ stack traceback:
           schedule = function(callback)
             callback()
           end,
+          new_timer = vim.uv.new_timer,
         })
 
         local result = async
@@ -428,10 +449,44 @@ stack traceback:
     end)
 
     it_exec('returns when the task completes before the timeout', function()
-      local task = run(function()
-        return 'FINISH'
+      local timeout_timer = {
+        closed = false,
+        close = function(self, callback)
+          self.closed = true
+          if callback then
+            callback()
+          end
+        end,
+        is_closing = function(self)
+          return self.closed
+        end,
+        start = function() end,
+      }
+
+      Async.init({
+        wait = vim.wait,
+        schedule = vim.schedule,
+        new_timer = function()
+          return timeout_timer
+        end,
+      })
+
+      local ok, err = pcall(function()
+        local task = run(function()
+          return 'FINISH'
+        end)
+        eq('FINISH', run(Async.timeout, 100, task):wait(10))
+        assert(timeout_timer.closed)
       end)
-      eq('FINISH', run(Async.timeout, 100, task):wait(10))
+
+      Async.init({
+        wait = vim.wait,
+        schedule = vim.schedule,
+        new_timer = vim.uv.new_timer,
+      })
+      if not ok then
+        error(err, 0)
+      end
     end)
 
     it_exec('closes detached child tasks', function()
@@ -524,17 +579,19 @@ stack traceback:
 
       local results = {} --- @type table[]
       run(function()
-        for i, r1, r2 in Async.iter(tasks) do
-          results[i] = { r1, r2 }
+        for task in Async.iter(tasks) do
+          local r1, r2 = await(task)
+          results[r2] = { r1, r2 }
         end
       end):wait(1000)
 
       eq(expected, results)
     end)
 
-    it_exec('can handle errors when iterating detached tasks', function()
+    it_exec('can inspect errors when iterating detached tasks', function()
       local results = {} --- @type table[]
       local tasks = {} --- @type vim.async.Task<any>[]
+      local task_err --- @type any
 
       for i = 1, 10 do
         tasks[i] = run(function()
@@ -546,13 +603,19 @@ stack traceback:
         end)
       end
 
-      local task = run(function()
-        for i, r1, r2 in Async.iter(tasks) do
-          results[i] = { r1, r2 }
+      run(function()
+        for task in Async.iter(tasks) do
+          local ok, r1, r2 = Async.pawait(task)
+          if not ok then
+            task_err = r1
+            break
+          end
+          results[r2] = { r1, r2 }
         end
-      end)
+      end):wait(100)
 
-      check_task_err(task, 'iter error%[index:3%]: test/async_spec.lua:%d+: ERROR IN TASK 3')
+      --- @cast task_err string
+      assert(task_err:match('test/async_spec.lua:%d+: ERROR IN TASK 3'), task_err)
 
       eq({
         { 'FINISH', 1 },
@@ -566,12 +629,12 @@ stack traceback:
         error(false, 0)
       end)
 
-      local parent = run(function()
-        for _ in Async.iter({ task }) do
-        end
-      end)
-
-      check_task_err(parent, 'iter error%[index:1%]: false')
+      run(function()
+        local completed = Async.iter({ task })()
+        local ok, err = Async.pawait(completed)
+        eq(false, ok)
+        eq(false, err)
+      end):wait(100)
     end)
 
     it_exec('can handle errors when iterating child tasks', function()
@@ -589,8 +652,9 @@ stack traceback:
           end)
         end
 
-        for i, r1, r2 in Async.iter(tasks) do
-          results[i] = { r1, r2 }
+        for task in Async.iter(tasks) do
+          local r1, r2 = await(task)
+          results[r2] = { r1, r2 }
         end
       end)
 
@@ -616,8 +680,9 @@ stack traceback:
       local results = {} --- @type table[]
 
       local task2 = run(function()
-        for i, r1, r2 in Async.iter({ task }) do
-          results[i] = { r1, r2 }
+        for completed in Async.iter({ task }) do
+          local r1, r2 = await(completed)
+          results[r2] = { r1, r2 }
         end
         error('GOT HERE')
       end)
@@ -641,19 +706,24 @@ stack traceback:
       assert(tasks[2]):close()
 
       local results = {} --- @type table[]
-      local task = run(function()
-        for i, r1, r2 in Async.iter(tasks) do
-          results[i] = { r1, r2 }
+      local errs = {} --- @type any[]
+      run(function()
+        for task in Async.iter(tasks) do
+          local ok, r1, r2 = Async.pawait(task)
+          if ok then
+            results[r2] = { r1, r2 }
+          else
+            errs[#errs + 1] = r1
+          end
         end
-      end)
-
-      check_task_err(task, 'iter error%[index:2%]: closed')
+      end):wait(100)
 
       eq({
         [1] = { 'FINISH', 1 },
         [3] = { 'FINISH', 3 },
         [4] = { 'FINISH', 4 },
       }, results)
+      eq({ 'closed' }, errs)
     end)
 
     it_exec('can iter tasks with garbage collection', function()
@@ -666,36 +736,22 @@ stack traceback:
 
       local task = run(eternity)
 
-      local t = run(function()
-        local i = Async.iter({ task })()
+      run(function()
+        local itr = Async.iter({ task })
         eq(get_task_callback_count(task), 1, 'task should have one callback')
-        eq(nil, i)
+        itr = nil
         collectgarbage('collect')
         eq(get_task_callback_count(task), 0, 'task should have no callbacks')
-      end)
+      end):wait(100)
 
       task:close()
-
-      check_task_err(t, 'iter error%[index:1%]: closed')
       check_task_err(task, 'closed')
     end)
 
-    it_exec('await_all tasks with cancellation', function()
-      local tasks = {} --- @type vim.async.Task<any>[]
-
-      for i = 1, 4 do
-        tasks[i] = run(function()
-          if i == 2 then
-            eternity()
-          end
-          return 'FINISH', i
-        end)
-      end
-
-      assert(tasks[2]):close()
-
-      local t = run(Async.await_all, tasks)
-      check_task_err(t, 'iter error%[index:2%]: closed')
+    it_exec('handles empty task lists', function()
+      run(function()
+        eq(nil, Async.iter({})())
+      end):wait(100)
     end)
   end)
 
@@ -735,6 +791,72 @@ stack traceback:
         'parent_done',
         'detached_started',
       }, results)
+    end)
+
+    it_exec('attaches tasks created from synchronous callbacks inside a task', function()
+      local release --- @type fun()?
+      local results = {}
+
+      local parent = run(function()
+        local function call(callback)
+          callback()
+        end
+
+        call(function()
+          run(function()
+            await(function(callback)
+              release = callback
+            end)
+            results[#results + 1] = 'child_done'
+          end)
+        end)
+
+        results[#results + 1] = 'parent_body_done'
+      end)
+
+      local ok, err = parent:pwait(10)
+      eq(false, ok)
+      eq('timeout', err)
+      eq({ 'parent_body_done' }, results)
+      assert(release, 'attached child was not started at parent finish')
+
+      release()
+      parent:wait(50)
+
+      eq({ 'parent_body_done', 'child_done' }, results)
+    end)
+
+    it_exec('does not attach tasks created from event-loop callbacks', function()
+      local release --- @type fun()?
+      local child --- @type vim.async.Task
+      local results = {}
+
+      local parent = run(function()
+        await(function(callback)
+          vim.schedule(function()
+            child = run(function()
+              await(function(child_callback)
+                release = child_callback
+              end)
+              results[#results + 1] = 'child_done'
+            end)
+            callback()
+          end)
+        end)
+
+        results[#results + 1] = 'parent_done'
+      end)
+
+      parent:wait(50)
+
+      eq({ 'parent_done' }, results)
+      assert(child, 'event-loop callback did not create child task')
+      assert(release, 'top-level callback task was not started')
+
+      release()
+      child:wait(50)
+
+      eq({ 'parent_done', 'child_done' }, results)
     end)
 
     it_exec('does not wait for detached task children after sync wait times out', function()
@@ -838,7 +960,9 @@ stack traceback:
             end)
           end)
         end
-        Async.await_all(tasks)
+        for task in Async.iter(tasks) do
+          await(task)
+        end
       end):wait()
 
       eq({
@@ -884,7 +1008,9 @@ stack traceback:
         local sem = Async.semaphore(1)
         local p1 = run(player, 'ping', sem)
         local p2 = run(player, 'pong', sem)
-        Async.await_all({ p1, p2 })
+        for task in Async.iter({ p1, p2 }) do
+          await(task)
+        end
       end):wait()
 
       eq({ 'ping', 'pong', 'ping', 'pong', 'ping', 'pong', 'ping', 'pong', 'ping', 'pong' }, msgs)
@@ -1009,77 +1135,6 @@ parent@test/async_spec.lua:%d+ %[awaiting%]
 
       parent:close()
       check_task_err(parent, 'closed')
-    end)
-  end)
-
-  describe('task completion', function()
-    it_exec('can complete tasks', function()
-      local task = run(eternity)
-      task:complete('DONE', 123)
-      local res1, res2 = task:wait()
-      eq('DONE', res1)
-      eq(123, res2)
-    end)
-
-    it_exec('can complete tasks with children', function()
-      local child --- @type vim.async.Task
-      local task = run(function()
-        child = run(eternity)
-        await(child)
-      end)
-      task:complete('DONE', 123)
-      local r1, r2 = task:wait()
-      eq('DONE', r1)
-      eq(123, r2)
-      check_task_err(child, 'closed')
-    end)
-
-    it_exec('handles race condition of children completing parent', function()
-      local parent_task --- @type vim.async.Task
-      local child2_task --- @type vim.async.Task
-      parent_task = run(function()
-        run(function()
-          Async.sleep(10)
-          parent_task:complete('child 1 won')
-        end)
-        child2_task = run(function()
-          Async.sleep(50)
-          parent_task:complete('child 2 won')
-        end)
-        eternity()
-      end)
-
-      local result = parent_task:wait(100)
-      eq('child 1 won', result)
-      check_task_err(child2_task, 'closed')
-    end)
-
-    it_exec('handles simultaneous calls to :complete() from scheduler', function()
-      local task = run(eternity)
-      local second_complete_error --- @type string?
-
-      vim.schedule(function()
-        task:complete('first call')
-      end)
-      vim.schedule(function()
-        local ok, err = pcall(function()
-          task:complete('second call')
-        end)
-        if not ok then
-          second_complete_error = err
-        end
-      end)
-
-      local result = task:wait(100)
-      eq('first call', result)
-
-      assert(second_complete_error ~= nil, 'Second complete() call should have errored')
-      assert(
-        second_complete_error:match(
-          '^test/async_spec.lua:%d+: Task is already completing or completed$'
-        ),
-        'Unexpected error message: ' .. second_complete_error
-      )
     end)
   end)
 
@@ -1319,24 +1374,18 @@ parent@test/async_spec.lua:%d+ %[awaiting%]
       }, results)
     end)
 
-    it_exec('pawait returns parent cancellation as data and keeps it terminal', function()
+    it_exec('pawait does not protect current task cancellation', function()
       local results = {}
-      local child --- @type vim.async.Task
       local parent = run(function()
-        child = run(eternity)
-
-        local ok, err = Async.pawait(child)
-
-        eq(false, ok)
-        results[#results + 1] = err == 'closed' and 'pawait_closed' or 'other_error'
-        results[#results + 1] = Async.is_closing() and 'is_closing' or 'not_closing'
-
-        local ok2, err2 = Async.pawait(function(callback)
-          vim.schedule(callback)
+        local ok, err = pcall(function()
+          Async.pawait(function(_callback)
+            return add_handle('pawait_current_cancellation_timer', vim.uv.new_timer())
+          end)
         end)
 
-        eq(false, ok2)
-        results[#results + 1] = err2 == 'closed' and 'second_pawait_closed' or 'second_other'
+        eq(false, ok)
+        results[#results + 1] = err == 'closed' and 'caught_closed' or 'other_error'
+        results[#results + 1] = Async.is_closing() and 'is_closing' or 'not_closing'
         results[#results + 1] = 'cleanup'
       end)
 
@@ -1346,16 +1395,14 @@ parent@test/async_spec.lua:%d+ %[awaiting%]
       end):wait()
 
       check_task_err(parent, 'closed')
-      check_task_err(child, 'closed')
       eq({
-        'pawait_closed',
+        'caught_closed',
         'is_closing',
-        'second_pawait_closed',
         'cleanup',
       }, results)
     end)
 
-    it_exec('pawait returns unrelated child errors as data and keeps them terminal', function()
+    it_exec('pawait does not protect unrelated current task errors', function()
       local results = {}
       local parent = run(function()
         local _child = run(function()
@@ -1363,13 +1410,15 @@ parent@test/async_spec.lua:%d+ %[awaiting%]
           error('CHILD ERROR')
         end)
 
-        local ok, err = Async.pawait(function(callback)
-          local timer = add_handle('pending_child_error_timer', vim.uv.new_timer())
-          timer:start(100, 0, function()
-            timer:close()
-            callback('done')
+        local ok, err = pcall(function()
+          Async.pawait(function(callback)
+            local timer = add_handle('pending_child_error_timer', vim.uv.new_timer())
+            timer:start(100, 0, function()
+              timer:close()
+              callback('done')
+            end)
+            return timer
           end)
-          return timer
         end)
 
         eq(false, ok)
@@ -1377,16 +1426,7 @@ parent@test/async_spec.lua:%d+ %[awaiting%]
         results[#results + 1] = err:match('child error:.*CHILD ERROR') and 'child_error'
           or 'other_error'
         results[#results + 1] = Async.is_closing() and 'is_closing' or 'not_closing'
-
-        local ok2, err2 = Async.pawait(function(callback)
-          vim.schedule(callback)
-        end)
-
-        eq(false, ok2)
-        --- @cast err2 string
-        results[#results + 1] = err2:match('child error:.*CHILD ERROR') and 'child_error_again'
-          or 'other_error_again'
-        results[#results + 1] = 'returned'
+        results[#results + 1] = 'cleanup'
       end)
 
       local ok, err = parent:pwait(200)
@@ -1397,8 +1437,7 @@ parent@test/async_spec.lua:%d+ %[awaiting%]
       eq({
         'child_error',
         'not_closing',
-        'child_error_again',
-        'returned',
+        'cleanup',
       }, results)
     end)
 
@@ -1439,6 +1478,63 @@ parent@test/async_spec.lua:%d+ %[awaiting%]
         'caught_second',
         'is_closed',
         'should_not_reach',
+      }, results)
+    end)
+
+    it_exec('checkpoint rethrows current task cancellation after cleanup', function()
+      local results = {}
+      local task = run(function()
+        local ok, err = pcall(function()
+          Async.sleep(100)
+        end)
+
+        eq(false, ok)
+        results[#results + 1] = err == 'closed' and 'caught_closed' or 'other_error'
+        results[#results + 1] = 'cleanup'
+
+        Async.checkpoint()
+        results[#results + 1] = 'after_checkpoint'
+      end)
+
+      run(function()
+        Async.sleep(1)
+        task:close()
+      end):wait()
+
+      check_task_err(task, 'closed')
+
+      eq({
+        'caught_closed',
+        'cleanup',
+      }, results)
+    end)
+
+    it_exec('checkpoint rethrows current task failure after cleanup', function()
+      local results = {}
+      local parent = run(function()
+        local _child = run(function()
+          Async.sleep(5)
+          error('CHILD ERROR')
+        end)
+
+        local ok, err = pcall(function()
+          Async.sleep(100)
+        end)
+
+        eq(false, ok)
+        --- @cast err string
+        results[#results + 1] = err:match('CHILD ERROR') and 'caught_child_error' or 'other_error'
+        results[#results + 1] = 'cleanup'
+
+        Async.checkpoint()
+        results[#results + 1] = 'after_checkpoint'
+      end)
+
+      check_task_err(parent, 'child error:.*CHILD ERROR')
+
+      eq({
+        'caught_child_error',
+        'cleanup',
       }, results)
     end)
 
@@ -1682,60 +1778,18 @@ parent@test/async_spec.lua:%d+ %[awaiting%]
       eq(1, close_count)
     end)
 
-    it_exec('_is_completing flag prevents multiple complete calls', function()
-      -- Test that _is_completing flag works correctly
-      local task = run(eternity)
-      local errors = {}
-
-      -- Try to complete twice in quick succession
-      vim.schedule(function()
-        local ok, err = pcall(function()
-          task:complete('FIRST')
-        end)
-        if not ok then
-          table.insert(errors, err)
-        end
-      end)
-
-      vim.schedule(function()
-        local ok, err = pcall(function()
-          task:complete('SECOND')
-        end)
-        if not ok then
-          table.insert(errors, err)
-        end
-      end)
-
-      local result = task:wait(100)
-
-      -- One should succeed
-      eq('FIRST', result)
-
-      -- The other should have errored
-      eq(1, #errors)
-      assert(
-        errors[1]:match('Task is already completing or completed'),
-        'Expected "already completing" error, got: ' .. errors[1]
-      )
-    end)
-
     it_exec('child error during parent finalization is handled', function()
-      -- Test the race condition where a child errors while parent is finalizing
       local parent = run(function()
         local _child = run(function()
-          -- Child sleeps briefly then errors
           Async.sleep(5)
           error('CHILD_ERROR')
         end)
 
-        -- Parent completes immediately, starting finalization
-        -- This should trigger awaiting the child, which will error
+        -- Returning starts finalization, which waits for attached child work.
       end)
 
-      -- Wait for parent to complete
       local ok, err = parent:pwait(100)
 
-      -- Parent should have gotten the child error
       eq(false, ok)
       --- @cast err string
       assert(err:match('child error:.*CHILD_ERROR'), 'Expected child error, got: ' .. tostring(err))
@@ -1768,7 +1822,7 @@ parent@test/async_spec.lua:%d+ %[awaiting%]
     end)
 
     it_exec('future complete is one-shot', function()
-      local future = Async._future()
+      local future = require('async._future')()
       future:complete(nil, 'first')
 
       local ok, err = pcall(function()
@@ -1785,7 +1839,7 @@ parent@test/async_spec.lua:%d+ %[awaiting%]
     end)
 
     it_exec('future false error still completes', function()
-      local future = Async._future()
+      local future = require('async._future')()
       future:complete(false)
 
       eq(true, future:completed())
@@ -1830,7 +1884,7 @@ parent@test/async_spec.lua:%d+ %[awaiting%]
     end)
 
     it_exec('normalizes nil future callback errors', function()
-      local future = Async._future()
+      local future = require('async._future')()
       future:on_complete(function()
         error()
       end)
@@ -1882,83 +1936,6 @@ parent@test/async_spec.lua:%d+ %[awaiting%]
 
       -- But only the first one should have been processed
       eq(1, #results)
-    end)
-
-    it_exec('simultaneous complete() calls in same tick are prevented', function()
-      -- This tests the atomic nature of _is_completing
-      local task --- @type vim.async.Task
-      local complete_results = {}
-
-      task = run(function()
-        -- Create two child tasks that will try to complete parent simultaneously
-        run(function()
-          Async.sleep(10)
-          local ok, err = pcall(function()
-            task:complete('CHILD_1')
-          end)
-          table.insert(complete_results, { child = 1, ok = ok, err = err })
-        end)
-
-        run(function()
-          Async.sleep(10)
-          local ok, err = pcall(function()
-            task:complete('CHILD_2')
-          end)
-          table.insert(complete_results, { child = 2, ok = ok, err = err })
-        end)
-
-        eternity()
-      end)
-
-      local result = task:wait(100)
-
-      -- Exactly one should have succeeded
-      local success_count = 0
-      local error_count = 0
-
-      for _, res in ipairs(complete_results) do
-        if res.ok then
-          success_count = success_count + 1
-        else
-          error_count = error_count + 1
-          assert(
-            res.err:match('Task is already completing or completed'),
-            'Unexpected error: ' .. tostring(res.err)
-          )
-        end
-      end
-
-      eq(1, success_count, 'Expected exactly one successful complete()')
-      eq(1, error_count, 'Expected exactly one failed complete()')
-
-      -- Result should be from the winning child
-      assert(
-        result == 'CHILD_1' or result == 'CHILD_2',
-        'Result should be from one of the children'
-      )
-    end)
-
-    it_exec('task can be closed even when _is_completing is set', function()
-      -- Test that setting _is_completing doesn't prevent closing
-      local task = run(function()
-        Async.sleep(50)
-        return 'NORMAL_COMPLETION'
-      end)
-
-      -- Start completing the task
-      vim.schedule(function()
-        task:complete('COMPLETED_EARLY')
-      end)
-
-      -- Try to close it immediately after
-      vim.schedule(function()
-        task:close()
-      end)
-
-      local result = task:wait(100)
-
-      -- The complete should win since it was scheduled first
-      eq('COMPLETED_EARLY', result)
     end)
 
     it_exec('closable cleanup happens even if close() errors', function()

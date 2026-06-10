@@ -1,3 +1,4 @@
+--- @type any
 local async = require('async')
 
 -- Examples of functions built on top of async.lua
@@ -26,11 +27,18 @@ function M.join_n_1(max_jobs, funs)
   for i = max_jobs + 1, #funs do
     local finished = async.iter(running)()
     --- @cast finished -?
-    running[finished] = async.run(assert(funs[i]))
+    for j, task in ipairs(running) do
+      if task == finished then
+        running[j] = async.run(assert(funs[i]))
+        break
+      end
+    end
   end
 
   -- Wait for all tasks to finish
-  async.await_all(running)
+  for task in async.iter(running) do
+    async.await(task)
+  end
 end
 
 --- Like async.join, but with a limit on the number of concurrent tasks.
@@ -85,7 +93,9 @@ function M.join_n_3(max_jobs, funs)
     end)
   end
 
-  async.await_all(tasks)
+  for task in async.iter(tasks) do
+    async.await(task)
+  end
 end
 
 return M

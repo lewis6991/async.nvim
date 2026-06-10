@@ -219,6 +219,114 @@ local function write_type(file, typ, typ_names)
   end
 end
 
+local function add_type_member(typ, member)
+  local desc = denil(member.description)
+  for i, existing in ipairs(typ.members) do
+    if existing.name == member.name and existing.type == member.type then
+      if desc or not denil(existing.description) then
+        typ.members[i] = member
+      end
+      return
+    end
+  end
+
+  typ.members[#typ.members + 1] = member
+end
+
+local function type_map(o)
+  local types = {} --- @type table<string, EmmyDoc.Type>
+  for _, typ in ipairs(o.types) do
+    types[typ.name] = typ
+  end
+  return types
+end
+
+local function merge_parent_type_members(o)
+  local types = type_map(o)
+  local parent = types['vim.async._core']
+  local child = types['vim.async']
+  if not parent or not child then
+    return
+  end
+
+  local child_desc = denil(child.description)
+  if not child_desc or child_desc == '' then
+    child.description = parent.description
+  end
+
+  local members = child.members
+  child.members = {}
+  for _, member in ipairs(parent.members) do
+    add_type_member(child, member)
+  end
+  for _, member in ipairs(members) do
+    add_type_member(child, member)
+  end
+end
+
+local function merge_public_module_members(o)
+  local exported = {
+    ['async._semaphore'] = 'vim.async',
+  }
+
+  local constructors = {
+    ['async._semaphore'] = {
+      name = 'semaphore',
+      params = {
+        { name = 'permits', typ = 'integer?', desc = '(default: 1)' },
+      },
+      returns = {
+        { typ = 'vim.async.Semaphore' },
+      },
+    },
+  }
+
+  local types = type_map(o)
+
+  for _, module in ipairs(o.modules) do
+    local type_name = exported[module.name]
+    local typ = type_name and types[type_name]
+    if typ then
+      for _, member in ipairs(module.members) do
+        add_type_member(typ, member)
+      end
+
+      local constructor = constructors[module.name]
+      if constructor then
+        add_type_member(typ, {
+          type = 'fn',
+          name = constructor.name,
+          description = module.description,
+          generics = {},
+          params = constructor.params,
+          returns = constructor.returns,
+          overloads = {},
+          is_async = false,
+          is_meth = false,
+        })
+      end
+    end
+  end
+end
+
+local function remove_private_types(o)
+  local private = {
+    ['vim.async.Event'] = true,
+    ['vim.async.Future'] = true,
+    ['vim.async.Queue'] = true,
+    ['vim.async.Runtime'] = true,
+    ['vim.async._core'] = true,
+  }
+
+  local types = {} --- @type EmmyDoc.Type[]
+  for _, typ in ipairs(o.types) do
+    if not private[typ.name] then
+      types[#types + 1] = typ
+    end
+  end
+  o.types = types
+end
+
 local function main()
   local json_path = arg[1]
   local output = arg[2]
@@ -234,6 +342,10 @@ local function main()
   table.sort(o.modules, function(a, b)
     return a.name < b.name
   end)
+
+  merge_parent_type_members(o)
+  merge_public_module_members(o)
+  remove_private_types(o)
 
   -- for _, module in ipairs(o.modules) do
   --   if module.name == 'async' then
