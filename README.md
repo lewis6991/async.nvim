@@ -1,404 +1,219 @@
 # async.nvim
 
-Structured concurrency library for Lua 5.1, built on coroutines.
+Structured concurrency for Lua 5.1, built on stackful coroutines.
 
-🚧 WIP and Under Construction 🚧
+async.nvim lets you write callback-driven work in a direct style while keeping
+clear task ownership: parents wait for attached children, unhandled child errors
+propagate upward, and cancellation propagates downward.
+
+For the full semantics, read [CONCURRENCY_MODEL.md](CONCURRENCY_MODEL.md).
+For a tour through similar async models in other languages, read
+[ASYNC_COMPARISONS.md](ASYNC_COMPARISONS.md).
+
+The design is heavily influenced by Nathaniel J. Smith's
+[Notes on structured concurrency, or: Go statement considered harmful](https://vorpus.org/blog/notes-on-structured-concurrency-or-go-statement-considered-harmful/).
 
 ## Installation
 
-### For Neovim Users
+In Neovim, you can install with the built-in package manager:
 
-Install via your preferred plugin manager.
-The library auto-configures when running in Neovim.
+```lua
+vim.pack.add({ 'https://github.com/lewis6991/async.nvim' })
+```
 
-### For Other Lua Environments
+Then require the module:
 
-Require the module and configure it with your event loop integration:
+```lua
+local async = require('async')
+```
+
+In Neovim, async.nvim initializes itself from `vim.wait`, `vim.schedule`, and
+`vim.uv.new_timer`.
+
+Outside Neovim, provide event-loop bindings:
 
 ```lua
 local async = require('async')
 
--- Provide event loop integration
 async.init({
-  wait = function(timeout, predicate)
-    -- Block main thread, run event loop until predicate() returns true
-    -- or timeout milliseconds elapsed
-    -- Returns: true if predicate became true, false if timeout
-  end,
-
-  schedule = function(callback)
-    -- Defer callback to next event loop iteration
-  end
+  wait = my_wait,
+  schedule = my_schedule,
+  new_timer = my_new_timer,
 })
 ```
 
-## Principles
-
-- Errors never pass silently and are always propagated.
-- Tasks always run to completion and are never orphaned unless explicitly detached.
-- Tasks are only ever created with `async.run()`
-- Cancellation/closing propagates downwards and errors propagate upwards
+`wait(timeout, predicate)` must pump the event loop until `predicate()` returns
+true or the timeout expires. `schedule(callback)` must run `callback` on a later
+event-loop turn. `new_timer()` must create a libuv-compatible timer.
 
 ## Quick Start
 
-### In Neovim
-
-```lua
--- Auto-configured, just use it
-vim.async.run(function()
-  vim.async.sleep(100)
-  print("Hello after 100ms")
-end)
-```
-
-### In Generic Lua
+Create a task with `run()`:
 
 ```lua
 local async = require('async')
 
--- After calling async.init() with your event loop...
 async.run(function()
   async.sleep(100)
-  print("Hello after 100ms")
+  print('ran after 100ms')
 end)
 ```
 
-## Concepts
-
-### Async functions
-
-A regular lua function that has some codepath to `await()`.
-`await()` suspends execution of the function and waits for it to be continued at a later point.
-Because of this async functions need to be executed within an async context.
-
-### Callback functions
-
-Aka continutation-passing style (CPS)
-
-A normal Lua function that has some form of callback argument.
-Instead of returning the function results using `return` , results are passed by calling the callback function.
-
-### Tasks
-
-Tasks are handles to asynchronous functions started by `async.run()`.
-
-## Example: From Callbacks to Async
-
-Suppose you have a function that runs a system process using callbacks:
+From synchronous code, use `task:wait()`:
 
 ```lua
-local function run_job(cmd, args, callback)
-  return vim.uv.spawn(cmd, { args = args }, callback)
-end
-```
-
-If we want to emulate something like:
-
-```bash
-echo foo && echo bar && echo baz
-```
-
-In Lua with callbacks, this becomes deeply nested:
-
-```lua
-
-run_job('echo', {'foo'},
-  function(code1)
-    if code1 ~= 0 then
-      return
-    end
-    run_job('echo', {'bar'},
-      function(code2)
-        if code2 ~= 0 then
-          return
-        end
-        run_job('echo', {'baz'})
-      end
-    )
-  end
-)
-
-```
-
-This quickly becomes unwieldy as the number of jobs increases.
-
-### With async.nvim
-
-`async.nvim` lets you write this in a linear, readable style:
-
-#### In Neovim
-
-```lua
--- Wrap the callback-based function (3 = callback position)
-local run_job_a = vim.async.wrap(3, run_job)
-
--- Create an async context
-local code = vim.async.run(function()
-  local code1 = run_job_a('echo', {'foo'})
-  if code1 ~= 0 then
-    return
-  end
-
-  local code2 = run_job_a('echo', {'bar'})
-  if code2 ~= 0 then
-    return
-  end
-
-  return run_job_a('echo', {'baz'})
+local result = async.run(function()
+  async.sleep(100)
+  return 'done'
 end):wait()
 ```
 
-#### In Generic Lua
+Inside a task, use `await()`:
 
 ```lua
--- Wrap the callback-based function (3 = callback position)
-local run_job_a = async.wrap(3, run_job)
-
--- Create an async context
-local code = async.run(function()
-  local code1 = run_job_a('echo', {'foo'})
-  if code1 ~= 0 then
-    return
-  end
-
-  local code2 = run_job_a('echo', {'bar'})
-  if code2 ~= 0 then
-    return
-  end
-
-  return run_job_a('echo', {'baz'})
-end):wait()
-```
-
-Now, you can call `run_job_a` imperatively, without callbacks.
-The async version returns the same results as the callback would have received.
-
-Additionally, since `run_job_a` returns a handle (e.g., `uv_process_t`), `async.run` will automatically close it when the task completes or is manually closed.
-
----
-
-## Callback Functions
-
-Callback functions accept a callback argument, which receives the result.
-Sometimes, omitting the callback runs the function synchronously.
-To support cancellation, these functions can return a handle `close()` method.
-
----
-
-## Async Function Nesting
-
-Unlike Python or JavaScript, not all functions need to be declared async.
-Instead, you must execute them in an async context using `async.run()`.
-
-```lua
---- @async
-local function foo(a, b) ... end
-
--- Illegal: must be inside async context
-foo(a, b)
-
--- Start foo as a task
-local task = async.run(foo, a, b)
-
--- Wait for foo to complete
-task:wait()
-
--- Create an async context
 async.run(function()
-  -- Blocking async call
-  foo(a, b)
-
-  -- Non-blocking: new async context
-  local task = async.run(foo, a, b)
-
-  -- Await task completion
-  async.await(task)
-end)
-```
-
----
-
-## Task Objects
-
-Tasks represent asynchronous operations.
-They can be awaited (pausing execution until completion) or closed.
-This makes them ideal for complex workflows, supporting cancellation, timeouts, and multiple consumers.
-
----
-
-## Comparison with Other Languages
-
-### Swift Example
-
-```swift
-func longRunningChildTask(id: Int) async {
-    print("Child Task \(id): Starting...")
-    for i in 1...10 {
-        // Option 1: Check `isCancelled` for graceful exit
-        guard !Task.isCancelled else {
-            print("Child Task \(id): Was cancelled.")
-            return
-        }
-
-        // Option 2: `checkCancellation()` throws if cancelled
-        do {
-            try Task.checkCancellation()
-        } catch {
-            print("Child Task \(id): Cancellation detected by checkCancellation(). Error: \(error.localizedDescription)")
-            return
-        }
-
-        print("Child Task \(id): Working... step \(i)")
-        // Simulate work with a cancellable sleep
-        try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
-    }
-    print("Child Task \(id): Completed naturally.")
-}
-
-@main
-struct SwiftConcurrencyApp {
-    static func main() async {
-        print("Main Task: Starting...")
-
-        // Create a parent task
-        let parentTask = Task {
-            print("Parent Task: Launched.")
-
-            // Create child tasks using async let
-            async let child1 = longRunningChildTask(id: 1)
-            async let child2 = longRunningChildTask(id: 2)
-
-            // Await the async let children. This also implies cancellation propagation.
-            _ = await [child1, child2]
-
-            print("Parent Task: All children should be done/cancelled.")
-        }
-
-        // Simulate an external cancellation after a short delay
-        try? await Task.sleep(nanoseconds: 1_000_000_000) // Wait 1 second
-        print("Main: Requesting cancellation of parent task...")
-        parentTask.cancel() // Explicitly cancel the parent task
-
-        await parentTask.value // Wait for the parent task (and its children) to finish/cancel
-        print("Main Task: Exiting.")
-    }
-}
-```
-
-### Lua with async.nvim (Neovim)
-
-```lua
---- @async
-local function longRunningChildTask(id)
-  print(('Child Task (%d): Starting...'):format(id))
-  for i = 1, 10 do
-    -- Option 1: Check `is_cancelled()` for graceful exit
-    if async.is_cancelled() then
-      print(('Child Task (%d): Was cancelled.'):format(id))
-      return
-    end
-
-    -- Option 2: `check_cancelled()` throws if cancelled
-    local _, err = pcall(async.check_cancelled)
-    if err then
-      print(('Child Task (%d): Cancellation detected by check_cancelled().'):format(id))
-      return
-    end
-
-    print(('Child Task (%d): Working... step %d'):format(id, i))
-    -- Simulate work with a cancellable sleep
-    async.sleep(500) -- 0.5 second
-  end
-  print(('Child Task (%d): Completed naturally'):format(id))
-end
-
---- @async
-local main = async.run(function()
-  print('Main Task: Starting...')
-
-  -- Create a parent task
-  local parentTask = vim.async.run(function()
-    print('Parent Task: Launched.')
-
-    -- Create child tasks using async.run
-    -- As the tasks are created in the scope of parentTask. This
-    -- also implies cancellation propagation.
-    local child1 = async.run(longRunningChildTask, 1)
-    local child2 = async.run(longRunningChildTask, 2)
-
-    -- Await the children
-    _ = async.await_all({ child1, child2 })
-
-    print('Parent Task: All children should be done/cancelled.')
+  local child = async.run(function()
+    async.sleep(100)
+    return 'done'
   end)
 
-  async.sleep(1000) -- Wait 1 second
-  parentTask:close() -- Cancel parent task
-
-  async.await(parentTask) -- Wait for the parent task (and its children) to finish/cancel
-  print('Main Task: Exiting.')
+  local result = async.await(child)
+  print(result)
 end)
 ```
 
-### Lua with async.nvim (Generic)
+## Wrapping Callbacks
+
+`wrap(argc, func)` turns a callback-taking function into an async function. The
+first argument is the callback position.
 
 ```lua
---- @async
-local function longRunningChildTask(id)
-  print(('Child Task (%d): Starting...'):format(id))
-  for i = 1, 10 do
-    -- Option 1: Check `is_cancelled()` for graceful exit
-    if async.is_cancelled() then
-      print(('Child Task (%d): Was cancelled.'):format(id))
-      return
-    end
+local fs_stat = async.wrap(2, vim.uv.fs_stat)
 
-    -- Option 2: `check_cancelled()` throws if cancelled
-    local _, err = pcall(async.check_cancelled)
-    if err then
-      print(('Child Task (%d): Cancellation detected by check_cancelled().'):format(id))
-      return
-    end
-
-    print(('Child Task (%d): Working... step %d'):format(id, i))
-    -- Simulate work with a cancellable sleep
-    async.sleep(500) -- 0.5 second
-  end
-  print(('Child Task (%d): Completed naturally'):format(id))
-end
-
---- @async
-local main = async.run(function()
-  print('Main Task: Starting...')
-
-  -- Create a parent task
-  local parentTask = async.run(function()
-    print('Parent Task: Launched.')
-
-    -- Create child tasks using async.run
-    -- As the tasks are created in the scope of parentTask. This
-    -- also implies cancellation propagation.
-    local child1 = async.run(longRunningChildTask, 1)
-    local child2 = async.run(longRunningChildTask, 2)
-
-    -- Await the children
-    _ = async.await_all({ child1, child2 })
-
-    print('Parent Task: All children should be done/cancelled.')
-  end)
-
-  async.sleep(1000) -- Wait 1 second
-  parentTask:close() -- Cancel parent task
-
-  async.await(parentTask) -- Wait for the parent task (and its children) to finish/cancel
-  print('Main Task: Exiting.')
+async.run(function()
+  local err, stat = fs_stat('README.md')
+  assert(not err, err)
+  print(stat and stat.type)
 end)
 ```
 
----
+You can also await a callback-taking function directly:
 
-## Other Async Libraries
+```lua
+async.run(function()
+  local err, stat = async.await(2, vim.uv.fs_stat, 'README.md')
+  assert(not err, err)
+  print(stat and stat.type)
+end)
+```
 
-- [coop.nvim](https://github.com/gregorias/coop.nvim)
-- [nvim-nio](https://github.com/nvim-neotest/nvim-nio)
-- https://gist.github.com/hrsh7th/9751059d72376086b2e4239b21c4ffcd
+If the callback function returns a closable handle, async.nvim closes that handle
+when the awaiting task is cancelled.
+
+## Task Scopes
+
+Tasks created inside another task are attached children. The parent waits for
+them before completing. If a child fails without being handled, the parent fails
+and closes remaining child work.
+
+```lua
+async.run(function()
+  local user = async.run(fetch_user)
+  local prefs = async.run(fetch_preferences)
+
+  render(async.await(user), async.await(prefs))
+end)
+```
+
+Use `detach()` for background work that should no longer be owned by the parent:
+
+```lua
+async.run(function()
+  async.run(background_loop):detach()
+end)
+```
+
+## Handling Errors
+
+`await(task)` raises if the awaited task fails or is closed. Use `pawait(task)`
+when the awaited task is allowed to fail and the current task should continue.
+
+```lua
+async.run(function()
+  local ok, result_or_err = async.pawait(async.run(load_optional_config))
+
+  if ok then
+    apply_config(result_or_err)
+  else
+    use_defaults(result_or_err)
+  end
+end)
+```
+
+`pawait()` protects awaited-operation failures. It does not hide cancellation or
+already-pending failure on the current task.
+
+## Coordination
+
+`iter(tasks)` yields completed task handles in completion order. Use
+`await(task)` or `pawait(task)` to read each result.
+
+```lua
+async.run(function()
+  local tasks = {
+    async.run(fetch_from_cache),
+    async.run(fetch_from_network),
+  }
+
+  local winner = async.iter(tasks)()
+  local ok, result_or_err = async.pawait(winner)
+
+  for _, task in ipairs(tasks) do
+    if task ~= winner then
+      task:close()
+    end
+  end
+
+  if not ok then
+    error(result_or_err, 0)
+  end
+
+  return result_or_err
+end)
+```
+
+`timeout(duration, task)` closes a task if it does not finish before the
+deadline:
+
+```lua
+async.run(function()
+  local task = async.run(fetch_from_network)
+  return async.timeout(5000, task)
+end)
+```
+
+`semaphore(permits)` limits how many tasks can enter a section at once:
+
+```lua
+async.run(function()
+  local sem = async.semaphore(4)
+
+  for _, item in ipairs(items) do
+    local item = item
+    async.run(function()
+      sem:with(function()
+        process(item)
+      end)
+    end)
+  end
+end)
+```
+
+## API Reference
+
+- `:help vim.async` or [doc/lua-async.txt](doc/lua-async.txt) for generated API
+  docs.
+- [CONCURRENCY_MODEL.md](CONCURRENCY_MODEL.md) for task ownership, checkpoints,
+  error propagation, and cancellation semantics.
+- [ASYNC_COMPARISONS.md](ASYNC_COMPARISONS.md) for examples from other async
+  ecosystems.

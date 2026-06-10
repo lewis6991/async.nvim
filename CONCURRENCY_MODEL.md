@@ -123,8 +123,7 @@ end)
 
 Callbacks invoked later by the event loop are different. By then the parent task
 has yielded, so no task stack is executing the callback. A task started from that
-callback is top-level unless the caller explicitly awaits or otherwise manages
-it.
+callback is top-level.
 
 ```lua
 vim.async.run(function()
@@ -496,13 +495,13 @@ end):detach()
 ```
 
 After `detach()`, the task is top-level. Its original parent no longer waits for
-it or cancels it.
+it, cancels it, or receives its failures.
 
 ## Coordination Utilities
 
-`iter(tasks)` yields completed task handles in completion order. It does not
-read the task result; use `await(task)` to raise failures or `pawait(task)` to
-handle them as data.
+`iter(tasks)` waits for existing task handles and yields them in completion
+order. Use `await(task)` or `pawait(task)` to get each completed task's result.
+This example races two tasks by taking the first completion:
 
 ```lua
 vim.async.run(function()
@@ -511,7 +510,7 @@ vim.async.run(function()
 
   local next_task = vim.async.iter({ cache, network })
   local winner = next_task()
-  local result = vim.async.await(winner)
+  local ok, result_or_err = vim.async.pawait(winner)
 
   if winner == cache then
     network:close()
@@ -519,7 +518,11 @@ vim.async.run(function()
     cache:close()
   end
 
-  return result
+  if not ok then
+    error(result_or_err, 0)
+  end
+
+  return result_or_err
 end)
 ```
 
