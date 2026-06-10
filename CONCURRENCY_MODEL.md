@@ -289,6 +289,16 @@ If the task has not started yet, it is closed without running its function.
 - a callback-taking function
 - an argument position plus a callback-taking function
 
+The API keeps async checkpoints separate from synchronous waits:
+
+| API | Context | Behavior |
+| --- | --- | --- |
+| `async.await(...)` | Inside a task | Suspend at an async checkpoint. |
+| `async.pawait(...)` | Inside a task | Protected await for recoverable awaited failures. |
+| `task:wait(timeout)` | Synchronous code | Pump the event loop until the task completes or times out. |
+| `task:pwait(timeout)` | Synchronous code | Protected synchronous wait. |
+| `task:on_complete(cb)` | Any context | Observe completion without blocking or starting a pending child task. |
+
 ```lua
 vim.async.run(function()
   local stat = vim.async.await(2, vim.uv.fs_stat, "file.txt")
