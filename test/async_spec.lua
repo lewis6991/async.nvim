@@ -396,7 +396,7 @@ stack traceback:
 
         local async = chunk()
         assert(async._runtime == nil)
-        async.init({
+        async.config({
           wait = function(timeout, predicate)
             local start = os.clock()
             while not predicate() do
@@ -503,7 +503,7 @@ stack traceback:
         start = function() end,
       }
 
-      Async.init({
+      Async.config({
         wait = vim.wait,
         schedule = vim.schedule,
         new_timer = function()
@@ -519,7 +519,7 @@ stack traceback:
         assert(timeout_timer.closed)
       end)
 
-      Async.init({
+      Async.config({
         wait = vim.wait,
         schedule = vim.schedule,
         new_timer = vim.uv.new_timer,
@@ -1161,13 +1161,13 @@ stack traceback:
 
       eq(
         p([=[
-parent@test/async_spec.lua:%d+ %[awaiting%]
-├─ child1@test/async_spec.lua:%d+ %[awaiting%]
-├─ child2@test/async_spec.lua:%d+ %[awaiting%]
-└─ child3@test/async_spec.lua:%d+ %[awaiting%]
-   ├─ sub_child1@test/async_spec.lua:%d+ %[awaiting%]
-   ├─ sub_child2@test/async_spec.lua:%d+ %[awaiting%]
-   └─ @test/async_spec.lua:%d+ %[awaiting%]]=]),
+parent %[awaiting%]
+├─ child1 %[awaiting%]
+├─ child2 %[awaiting%]
+└─ child3 %[awaiting%]
+   ├─ sub_child1 %[awaiting%]
+   ├─ sub_child2 %[awaiting%]
+   └─ %[awaiting%]]=]),
         Async._inspect_tree()
       )
 
@@ -1190,18 +1190,45 @@ parent@test/async_spec.lua:%d+ %[awaiting%]
 
       eq(
         p([=[
-parent@test/async_spec.lua:%d+ %[awaiting%]
-├─ child1@test/async_spec.lua:%d+ %[awaiting%]
-├─ child2@test/async_spec.lua:%d+ %[awaiting%]
-└─ child3@test/async_spec.lua:%d+ %[running%]
-   ├─ sub_child1@test/async_spec.lua:%d+ %[awaiting%]
-   ├─ sub_child2@test/async_spec.lua:%d+ %[awaiting%]
-   └─ @test/async_spec.lua:%d+ %[awaiting%]]=]),
+parent %[awaiting%]
+├─ child1 %[awaiting%]
+├─ child2 %[awaiting%]
+└─ child3 %[running%]
+   ├─ sub_child1 %[awaiting%]
+   ├─ sub_child2 %[awaiting%]
+   └─ %[awaiting%]]=]),
         inspect
       )
 
       parent:close()
       check_task_err(parent, 'closed')
+    end)
+
+    it_exec('can show task creation locations in debug mode', function()
+      Async.config({ debug = true })
+      local parent
+      local ok, err = pcall(function()
+        parent = run('parent', function()
+          run('child', eternity)
+        end)
+
+        eq(
+          p([=[
+parent@test/async_spec.lua:%d+ %[awaiting%]
+└─ child@test/async_spec.lua:%d+ %[awaiting%]]=]),
+          Async._inspect_tree()
+        )
+      end)
+      if parent then
+        parent:close()
+      end
+      Async.config({ debug = false })
+      if parent then
+        check_task_err(parent, 'closed')
+      end
+      if not ok then
+        error(err, 0)
+      end
     end)
   end)
 

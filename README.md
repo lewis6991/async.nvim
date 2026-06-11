@@ -35,7 +35,7 @@ Outside Neovim, provide event-loop bindings:
 ```lua
 local async = require('async')
 
-async.init({
+async.config({
   wait = my_wait,
   schedule = my_schedule,
   new_timer = my_new_timer,
@@ -45,6 +45,8 @@ async.init({
 `wait(timeout, predicate)` must pump the event loop until `predicate()` returns
 true or the timeout expires. `schedule(callback)` must run `callback` on a later
 event-loop turn. `new_timer()` must create a libuv-compatible timer.
+
+Set `debug = true` to capture task creation locations for inspection output.
 
 ## Waiting And Awaiting
 

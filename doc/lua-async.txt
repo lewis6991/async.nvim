@@ -113,13 +113,13 @@ vim.async.semaphore({permits})                             *async.semaphore()*
     - (`vim.async.Semaphore`) (See |vim.async.Semaphore|)
 
 ------------------------------------------------------------------------------
-vim.async.init({opts})                                          *async.init()*
+vim.async.config({opts})                                      *async.config()*
 
-    Initialize async runtime for non-Neovim environments.
+    Configure async runtime behavior.
 
-    In Neovim, initialization happens automatically. Only call this if you're
-    using the library outside of Neovim or you want to override the detected
-    runtime bindings.
+    In Neovim, event-loop bindings are configured automatically. Only set
+    `wait`, `schedule`, or `new_timer` if you're using the library outside of
+    Neovim or you want to override the detected runtime bindings.
 
     `opts.wait(timeout, predicate)` must run the event loop until `predicate`
     returns true or the timeout expires. `opts.schedule(callback)` must defer a
@@ -127,7 +127,16 @@ vim.async.init({opts})                                          *async.init()*
     libuv-compatible timers.
 
     Parameters: ~
-    - {opts} (`vim.async.InitOpts`) (See |vim.async.InitOpts|)
+    - {opts} (`vim.async.ConfigOpts`) (See |vim.async.ConfigOpts|)
+
+
+------------------------------------------------------------------------------
+vim.async.init({opts})                                          *async.init()*
+
+    Alias for |async.config()|.
+
+    Parameters: ~
+    - {opts} (`vim.async.ConfigOpts`) (See |vim.async.ConfigOpts|)
 
 
 ------------------------------------------------------------------------------
@@ -217,23 +226,31 @@ vim.async.timeout({duration}, {task})                        *async.timeout()*
 
 
 ==============================================================================
-*vim.async.InitOpts*
+*vim.async.ConfigOpts*
 ------------------------------------------------------------------------------
-*vim.async.InitOpts.wait*
-    Type: `fun(timeout: integer, predicate: fun() -> boolean) -> boolean
-
-
-------------------------------------------------------------------------------
-*vim.async.InitOpts.schedule*
-    Type: `fun(callback: fun())
+*vim.async.ConfigOpts.wait*
+    Type: `(fun(timeout: integer, predicate: fun() -> boolean) -> boolean)?
 
 
 ------------------------------------------------------------------------------
-*vim.async.InitOpts.new_timer*
-    Type: `vim.async.TimerFactory
+*vim.async.ConfigOpts.schedule*
+    Type: `(fun(callback: fun()))?
+
+
+------------------------------------------------------------------------------
+*vim.async.ConfigOpts.new_timer*
+    Type: `vim.async.TimerFactory?
 
 
     Create libuv-compatible timers for `sleep()` and `timeout()`.
+
+
+------------------------------------------------------------------------------
+*vim.async.ConfigOpts.debug*
+    Type: `boolean?
+
+
+    Capture extra task debugging metadata.
 
 
 ==============================================================================

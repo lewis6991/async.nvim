@@ -15,7 +15,7 @@ async.nvim needs three event-loop operations:
 ```lua
 local async = require('async')
 
-async.init({
+async.config({
   wait = my_wait_implementation,
   schedule = my_schedule_implementation,
   new_timer = my_timer_factory,
@@ -24,6 +24,8 @@ async.init({
 
 In Neovim this is initialized automatically from `vim.wait`, `vim.schedule`,
 and `vim.uv.new_timer`.
+
+Set `debug = true` to capture task creation locations for inspection output.
 
 The runtime hooks have distinct jobs:
 

@@ -12,6 +12,7 @@ async.Task:traceback()	lua-async.txt	/*async.Task:traceback()*
 async.Task:wait()	lua-async.txt	/*async.Task:wait()*
 async.await()	lua-async.txt	/*async.await()*
 async.checkpoint()	lua-async.txt	/*async.checkpoint()*
+async.config()	lua-async.txt	/*async.config()*
 async.init()	lua-async.txt	/*async.init()*
 async.is_closing()	lua-async.txt	/*async.is_closing()*
 async.iter()	lua-async.txt	/*async.iter()*
@@ -25,10 +26,11 @@ vim.async	lua-async.txt	/*vim.async*
 vim.async.Closable	lua-async.txt	/*vim.async.Closable*
 vim.async.Closable.close	lua-async.txt	/*vim.async.Closable.close*
 vim.async.Closable.is_closing	lua-async.txt	/*vim.async.Closable.is_closing*
-vim.async.InitOpts	lua-async.txt	/*vim.async.InitOpts*
-vim.async.InitOpts.new_timer	lua-async.txt	/*vim.async.InitOpts.new_timer*
-vim.async.InitOpts.schedule	lua-async.txt	/*vim.async.InitOpts.schedule*
-vim.async.InitOpts.wait	lua-async.txt	/*vim.async.InitOpts.wait*
+vim.async.ConfigOpts	lua-async.txt	/*vim.async.ConfigOpts*
+vim.async.ConfigOpts.debug	lua-async.txt	/*vim.async.ConfigOpts.debug*
+vim.async.ConfigOpts.new_timer	lua-async.txt	/*vim.async.ConfigOpts.new_timer*
+vim.async.ConfigOpts.schedule	lua-async.txt	/*vim.async.ConfigOpts.schedule*
+vim.async.ConfigOpts.wait	lua-async.txt	/*vim.async.ConfigOpts.wait*
 vim.async.Semaphore	lua-async.txt	/*vim.async.Semaphore*
 vim.async.Task	lua-async.txt	/*vim.async.Task*
 vim.async.Task.name	lua-async.txt	/*vim.async.Task.name*

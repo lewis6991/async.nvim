@@ -19,21 +19,24 @@ local function unsubscribe_all(unsubscribe)
   end
 end
 
---- Initialize async runtime for non-Neovim environments.
+--- Configure async runtime behavior.
 ---
---- In Neovim, initialization happens automatically. Only call this if you're
---- using the library outside of Neovim or you want to override the detected
---- runtime bindings.
+--- In Neovim, event-loop bindings are configured automatically. Only set
+--- `wait`, `schedule`, or `new_timer` if you're using the library outside of
+--- Neovim or you want to override the detected runtime bindings.
 ---
 --- `opts.wait(timeout, predicate)` must run the event loop until `predicate`
 --- returns true or the timeout expires. `opts.schedule(callback)` must defer a
 --- callback to the next event loop turn. `opts.new_timer()` must create
 --- libuv-compatible timers.
 ---
---- @param opts vim.async.InitOpts
-function M.init(opts)
-  runtime.init(opts)
+--- @param opts vim.async.ConfigOpts
+function M.config(opts)
+  runtime.config(opts)
 end
+
+--- Alias for |async.config()|.
+M.init = M.config
 
 --- Create an async function from a callback-style function.
 ---
@@ -145,7 +148,7 @@ function M.timeout(duration, task)
 end
 
 if type(vim) == 'table' then
-  M.init({
+  M.config({
     wait = vim.wait,
     schedule = vim.schedule,
     new_timer = vim.uv.new_timer,

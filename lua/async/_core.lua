@@ -686,9 +686,11 @@ local function run(name, func, ...)
   validate('func', func, 'callable')
   local task = Task._new(name, func, ...)
   task:_attach(running())
-  local info = debug.getinfo(2, 'Sl')
-  if info and info.currentline then
-    task._caller = ('%s:%d'):format(info.source, info.currentline)
+  if runtime.debug then
+    local info = debug.getinfo(2, 'Sl')
+    if info and info.currentline then
+      task._caller = ('%s:%d'):format(info.source, info.currentline)
+    end
   end
 
   -- Top-level tasks have no parent checkpoint to start them, so they start
@@ -884,11 +886,17 @@ do --- M._inspect_tree()
     local r = {} --- @type string[]
     for i, task in ipairs(tasks) do
       local last = i == #tasks
-      r[#r + 1] = ('%s%s%s%s [%s]'):format(
+      local label = task.name or ''
+      if task._caller then
+        label = label .. task._caller
+      end
+      if label ~= '' then
+        label = label .. ' '
+      end
+      r[#r + 1] = ('%s%s%s[%s]'):format(
         prefix or '',
         parent and (last and '└─ ' or '├─ ') or '',
-        task.name or '',
-        task._caller or '@unknown',
+        label,
         task:status()
       )
       local child_prefix = (prefix or '') .. (parent and (last and '   ' or '│  ') or '')

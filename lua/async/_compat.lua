@@ -34,6 +34,8 @@ function M.validate(name, value, expected_type, optional)
     valid = actual_type == 'table'
   elseif expected_type == 'number' then
     valid = actual_type == 'number'
+  elseif expected_type == 'boolean' then
+    valid = actual_type == 'boolean'
   else
     error(string.format('validate: unsupported type "%s"', expected_type), 2)
   end
