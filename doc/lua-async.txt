@@ -21,7 +21,7 @@ vim.async.run({func}, {...})                                     *async.run()*
 
     Parameters: ~
     - {func} (`async fun(...: T ...) -> R ...`)
-    - {...} (`???`)
+    - {...} (`T ...`): Arguments to pass to the function
 
     Returns: ~
     - (`vim.async.Task<R ...>`)
@@ -78,6 +78,9 @@ vim.async.pawait({...})                                       *async.pawait()*
     Parameters: ~
     - {...} (`any`): see overloads
 
+    Returns: ~
+    - {ok} (`boolean`)
+    - (`R ...`): ... result or error
 
 ------------------------------------------------------------------------------
 vim.async.checkpoint()                                    *async.checkpoint()*
@@ -217,29 +220,29 @@ vim.async.timeout({duration}, {task})                        *async.timeout()*
 *vim.async.Closable*
 ------------------------------------------------------------------------------
 *vim.async.Closable.close*
-    Type: `fun(self, callback: (fun())?)
+    Type: `fun(self, callback: (fun())?)`
 
 
 ------------------------------------------------------------------------------
 *vim.async.Closable.is_closing*
-    Type: `(fun(self) -> boolean)?
+    Type: `(fun(self) -> boolean)?`
 
 
 ==============================================================================
 *vim.async.ConfigOpts*
 ------------------------------------------------------------------------------
 *vim.async.ConfigOpts.wait*
-    Type: `(fun(timeout: integer, predicate: fun() -> boolean) -> boolean)?
+    Type: `(fun(timeout: integer, predicate: fun() -> boolean) -> boolean)?`
 
 
 ------------------------------------------------------------------------------
 *vim.async.ConfigOpts.schedule*
-    Type: `(fun(callback: fun()))?
+    Type: `(fun(callback: fun()))?`
 
 
 ------------------------------------------------------------------------------
 *vim.async.ConfigOpts.new_timer*
-    Type: `vim.async.TimerFactory?
+    Type: `vim.async.TimerFactory?`
 
 
     Create libuv-compatible timers for `sleep()` and `timeout()`.
@@ -247,10 +250,10 @@ vim.async.timeout({duration}, {task})                        *async.timeout()*
 
 ------------------------------------------------------------------------------
 *vim.async.ConfigOpts.debug*
-    Type: `boolean?
+    Type: `boolean?`
 
 
-    Capture extra task debugging metadata.
+    Capture task creation metadata for debugging.
 
 
 ==============================================================================
@@ -315,7 +318,7 @@ one waiter.
 
 ------------------------------------------------------------------------------
 *vim.async.Task.name*
-    Type: `string?
+    Type: `string?`
 
 
     Name of the task
@@ -414,9 +417,10 @@ vim.async.Task:raise_on_error()                  *async.Task:raise_on_error()*
 ------------------------------------------------------------------------------
 vim.async.Task:close({callback})                          *async.Task:close()*
 
-    Close the task and all of its children.
-    If callback is provided it will run asynchronously,
-    else it will run synchronously.
+    Request cooperative close for the task and all of its children.
+
+    The optional callback observes task completion and may run immediately if
+    the task has already completed.
 
     Parameters: ~
     - {callback} (`(fun())?`)
@@ -434,17 +438,17 @@ vim.async.Task:status()                                  *async.Task:status()*
     - 'completed'  : task and all it's children have completed
 
     Returns: ~
-    - (`("running"|"awaiting"|"normal"|"scheduled"|"completed")`)
+    - (`("running"|"awaiting"|"normal"|"completed")`)
 
 ==============================================================================
 *vim.async.Timer*
 ------------------------------------------------------------------------------
 *vim.async.Timer.start*
-    Type: `fun(self, timeout: integer, repeat_interval: integer, callback: fun())
+    Type: `fun(self, timeout: integer, repeat_interval: integer, callback: fun())`
 
 
 ==============================================================================
 *vim.async.TimerFactory*
-    Type: `fun() -> vim.async.Timer
+    Type: `fun() -> vim.async.Timer`
 
 vim:tw=78:ts=8:sw=4:sts=4:et:ft=help:norl:

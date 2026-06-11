@@ -33,7 +33,7 @@ function Semaphore:with(fn)
   local stat = r[1]
   if not stat then
     local err = r[2]
-    error(err)
+    error(err, 0)
   end
   return util.unpack_len(r, 2)
 end

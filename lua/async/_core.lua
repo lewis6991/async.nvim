@@ -314,6 +314,16 @@ do --- Task
     end
   end
 
+  --- @private
+  function Task:_close_children()
+    for i = 1, self._children_idx do
+      local child = self._children[i]
+      if child then
+        child:close()
+      end
+    end
+  end
+
   --- Keep the first task error. The error can be any non-nil Lua value.
   --- @package
   --- @param err any
@@ -341,9 +351,10 @@ do --- Task
     end
   end
 
-  --- Close the task and all of its children.
-  --- If callback is provided it will run asynchronously,
-  --- else it will run synchronously.
+  --- Request cooperative close for the task and all of its children.
+  ---
+  --- The optional callback observes task completion and may run immediately if
+  --- the task has already completed.
   ---
   --- @param callback? fun()
   function Task:close(callback)
@@ -358,8 +369,8 @@ do --- Task
     end
   end
 
-  --- Record a child failure on this task and deliver it unless this task is
-  --- already collecting children during finalization.
+  --- Record a child failure on this task and either deliver it to a live
+  --- parent or close sibling children during finalization.
   --- @package
   --- @param child vim.async.Task<any>
   --- @param err any
@@ -371,7 +382,11 @@ do --- Task
     end
 
     local task_err = self:_set_error('child error: ' .. tostring(err))
-    if not self._finalizing_children then
+    if self._finalizing_children then
+      -- The parent coroutine is already dead, so sibling cleanup must wake the
+      -- finalizer instead of trying to resume the parent.
+      self:_close_children()
+    else
       self:_raise(task_err)
     end
   end
@@ -442,16 +457,15 @@ do --- Task
         -- TODO(lewis6991): should we collect all errors?
         local close_remaining = not stat
 
-        if not close_remaining then
+        if close_remaining then
+          self:_close_children()
+        else
           self:_start_pending_children()
         end
 
         for i = 1, self._children_idx do
           local child = self._children[i]
           if child then
-            if close_remaining then
-              child:close()
-            end
             -- Finalization owns child failures here; don't let them re-enter
             -- the dead parent coroutine and complete the future twice.
             local ok, err = pcall(M.await, child)
@@ -460,6 +474,7 @@ do --- Task
             if not close_remaining and not self._closing and not ok and not child._closing then
               self:_set_error('child error: ' .. tostring(err))
               close_remaining = true
+              self:_close_children()
             end
           end
         end
@@ -638,7 +653,7 @@ do --- Task
   --- - 'awaiting'   : if the task is awaiting another task either directly via
   ---                  `await()` or waiting for all children to complete.
   --- - 'completed'  : task and all it's children have completed
-  --- @return 'running' | 'awaiting' | 'normal' | 'scheduled' | 'completed'
+  --- @return 'running' | 'awaiting' | 'normal' | 'completed'
   function Task:status()
     if self:completed() then
       return 'completed'
@@ -695,6 +710,7 @@ end
 --- first run when their parent reaches a checkpoint.
 --- @generic T, R
 --- @param func async fun(...: T...): R...
+--- @param ... T... Arguments to pass to the function
 --- @return vim.async.Task<R...>
 --- @overload fun(name: string, func: async fun(...: T...), ...: T...): vim.async.Task<R...>
 function M.run(func, ...)
@@ -810,6 +826,8 @@ end
 --- @overload async fun(func: (fun(callback: fun(...: R...)): vim.async.Closable?)): boolean, R...
 --- @overload async fun(argc: integer, func: (fun(...: T..., callback: fun(...: R...)): vim.async.Closable?), ...: T...): boolean, R...
 --- @overload async fun(task: vim.async.Task<R>): boolean, R...
+--- @return boolean ok
+--- @return R... ... result or error
 --- @return_overload true, R...
 --- @return_overload false, any
 function M.pawait(...)

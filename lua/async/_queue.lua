@@ -28,7 +28,9 @@ end
 --- @async
 --- @param value any
 function Queue:put(value)
-  self._non_full:wait()
+  while self:size() == self:max_size() do
+    self._non_full:wait()
+  end
   self:put_nowait(value)
 end
 
@@ -38,7 +40,9 @@ end
 --- @async
 --- @return any
 function Queue:get()
-  self._non_empty:wait()
+  while self:size() == 0 do
+    self._non_empty:wait()
+  end
   return self:get_nowait()
 end
 

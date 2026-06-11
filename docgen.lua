@@ -102,7 +102,7 @@ local function write_member(file, mod_name, member, typ_names)
 
   if member.type == 'field' then
     file:write('*', mod_name, '.', member.name, '*\n')
-    file:write('    Type: `', member.typ, '\n\n')
+    file:write('    Type: `', member.typ, '`\n\n')
     if desc then
       write_desc(file, indent(desc, 4))
     end
@@ -121,7 +121,7 @@ local function write_member(file, mod_name, member, typ_names)
     else
       local sep = member.is_meth and ':' or '.'
       sig = ('%s%s%s(%s)'):format(mod_name, sep, member.name, table.concat(param_names, ', '))
-      
+
       -- Strip 'vim.' prefix from tags for generic module namespace
       local tag_name = mod_name:gsub('^vim%.', '')
       tag = ('*%s%s%s()*'):format(tag_name, sep, member.name)
@@ -211,7 +211,7 @@ local function write_type(file, typ, typ_names)
   end
 
   if typ.type == 'alias' then
-    file:write('    Type: `', typ.typ, '\n\n')
+    file:write('    Type: `', typ.typ, '`\n\n')
   end
 
   for _, member in ipairs(typ.members) do

@@ -1,4 +1,5 @@
 local async = require('async._core')
+local runtime = require('async._runtime')
 
 --- An event can be used to notify multiple tasks that some event has
 --- happened. An Event object manages an internal flag that can be set to true
@@ -24,31 +25,50 @@ end
 
 --- Set the event.
 ---
---- All tasks waiting for event to be set will be immediately awakened.
+--- All tasks waiting for event to be set will be awakened on a later event-loop
+--- turn.
 ---
 --- If `max_woken` is provided, only up to `max_woken` waiters will be woken.
---- The event will be reset to `false` if there are more waiters remaining.
+--- If waiters are woken this way, the event is reset because the signal is
+--- reserved for those waiters.
 --- @param max_woken? integer
 function Event:set(max_woken)
   if self._is_set then
     return
   end
-  self._is_set = true
-  local waiters = self._waiters
-  local waiters_to_notify = {} --- @type function[]
-  max_woken = max_woken or #waiters
-  while #waiters > 0 and #waiters_to_notify < max_woken do
-    local waiter = table.remove(waiters, 1)
-    if waiter then
-      waiters_to_notify[#waiters_to_notify + 1] = waiter
-    end
+
+  local limited = max_woken ~= nil
+  if not has_waiters(self._waiters) then
+    self._is_set = true
+    return
   end
-  if has_waiters(waiters) then
+
+  self._is_set = true
+  if limited then
+    -- The signal is reserved for existing waiters and will be assigned on the
+    -- scheduled turn. New waiters must not consume it first.
     self._is_set = false
   end
-  for _, waiter in ipairs(waiters_to_notify) do
-    waiter()
-  end
+
+  runtime.schedule(function()
+    local waiters = self._waiters
+    local waiters_to_notify = {} --- @type function[]
+    local limit = max_woken or math.huge
+    while #waiters > 0 and #waiters_to_notify < limit do
+      local waiter = table.remove(waiters, 1)
+      if waiter then
+        waiters_to_notify[#waiters_to_notify + 1] = waiter
+      end
+    end
+
+    if limited and #waiters_to_notify == 0 and not has_waiters(waiters) then
+      self._is_set = true
+    end
+
+    for _, waiter in ipairs(waiters_to_notify) do
+      waiter()
+    end
+  end)
 end
 
 --- Wait until the event is set.

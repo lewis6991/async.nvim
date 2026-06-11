@@ -7,6 +7,7 @@ leak, errors do not disappear, and cancellation reaches the work it owns.
 
 This document describes the semantics of the model. The implementation lives in
 `lua/async/_core.lua`; the public API is exported from `lua/async.lua`.
+Examples assume `local async = require('async')`.
 
 ## Runtime and Event Loop
 
@@ -24,8 +25,6 @@ async.config({
 
 In Neovim this is initialized automatically from `vim.wait`, `vim.schedule`,
 and `vim.uv.new_timer`.
-
-Set `debug = true` to capture task creation locations for inspection output.
 
 The runtime hooks have distinct jobs:
 
@@ -58,9 +57,9 @@ There are no preemptive checkpoints. Synchronous Lua code is never interrupted
 in the middle of a stack frame.
 
 ```lua
-vim.async.run(function()
+async.run(function()
   print("runs now")
-  vim.async.await(vim.schedule)
+  async.await(vim.schedule)
   print("runs after the event loop resumes this task")
 end)
 ```
@@ -80,7 +79,7 @@ local function display_user(id)
   print(user.name)
 end
 
-vim.async.run(function()
+async.run(function()
   display_user(123)
 end)
 ```
@@ -92,15 +91,15 @@ such as JavaScript, Python, Swift, and Kotlin.
 
 ## Tasks and Scopes
 
-`vim.async.run(fn)` creates a task. A task is both:
+`async.run(fn)` creates a task. A task is both:
 
 - a handle for one async operation
 - a scope that owns child tasks created inside it
 
 ```lua
-local parent = vim.async.run(function()
-  local child = vim.async.run(worker)
-  vim.async.await(child)
+local parent = async.run(function()
+  local child = async.run(worker)
+  async.await(child)
 end)
 ```
 
@@ -114,9 +113,9 @@ callback is called synchronously inside a task, it is still part of that task's
 stack, so tasks created there are attached children.
 
 ```lua
-vim.async.run(function()
+async.run(function()
   for_each(items, function(item)
-    vim.async.run(function()
+    async.run(function()
       process(item)
     end)
   end)
@@ -128,10 +127,10 @@ has yielded, so no task stack is executing the callback. A task started from tha
 callback is top-level.
 
 ```lua
-vim.async.run(function()
-  vim.async.await(function(done)
+async.run(function()
+  async.await(function(done)
     vim.schedule(function()
-      vim.async.run(background_work) -- top-level
+      async.run(background_work) -- top-level
       done()
     end)
   end)
@@ -139,17 +138,17 @@ end)
 ```
 
 ```lua
-local top_level = vim.async.run(function()
-  vim.async.sleep(50)
+local top_level = async.run(function()
+  async.sleep(50)
 end)
 
-local parent = vim.async.run(function()
-  local child = vim.async.run(function()
-    vim.async.sleep(100)
+local parent = async.run(function()
+  local child = async.run(function()
+    async.sleep(100)
   end)
 
-  vim.async.await(child)
-  vim.async.await(top_level)
+  async.await(child)
+  async.await(top_level)
 end)
 ```
 
@@ -173,12 +172,12 @@ If the parent errors or closes before a pending child starts, that child is
 closed without running user code.
 
 ```lua
-vim.async.run(function()
-  local child = vim.async.run(function()
+async.run(function()
+  local child = async.run(function()
     error("optional child failed")
   end)
 
-  local ok, err = vim.async.pawait(child)
+  local ok, err = async.pawait(child)
   if not ok then
     use_fallback(err)
   end
@@ -208,13 +207,13 @@ cancellation.
 A parent task cannot complete while attached children are still running.
 
 ```lua
-local parent = vim.async.run(function()
-  vim.async.run(function()
-    vim.async.sleep(100)
+local parent = async.run(function()
+  async.run(function()
+    async.sleep(100)
   end)
 
-  vim.async.run(function()
-    vim.async.sleep(50)
+  async.run(function()
+    async.sleep(50)
   end)
 
   print("body done")
@@ -233,17 +232,17 @@ remaining child work, waits for cleanup, and then completes with the child
 failure.
 
 ```lua
-vim.async.run(function()
-  vim.async.run(function()
-    vim.async.sleep(10)
+async.run(function()
+  async.run(function()
+    async.sleep(10)
     error("child failed")
   end)
 
-  vim.async.run(function()
-    vim.async.sleep(1000)
+  async.run(function()
+    async.sleep(1000)
   end)
 
-  vim.async.sleep(100)
+  async.sleep(100)
 end)
 ```
 
@@ -260,13 +259,13 @@ are closed without running user code.
 Closing a task closes its attached children.
 
 ```lua
-local parent = vim.async.run(function()
-  vim.async.run(function()
-    vim.async.sleep(1000)
+local parent = async.run(function()
+  async.run(function()
+    async.sleep(1000)
     print("not reached")
   end)
 
-  vim.async.sleep(100)
+  async.sleep(100)
 end)
 
 parent:close()
@@ -278,8 +277,9 @@ stop another task in the middle of a function call.
 
 If the task is waiting at a checkpoint, that wait is interrupted. If async.nvim
 owns a closable operation for that wait, such as a timer or attached child task,
-it closes that operation first (see [Resource Cleanup](#resource-cleanup)). Then
-the checkpoint reports cancellation with the Lua error value `"closed"`.
+it closes that operation first (see [Resource Cleanup](#resource-cleanup)). If
+cleanup succeeds, the checkpoint reports cancellation with the Lua error value
+`"closed"`; if cleanup fails, the cleanup error is reported instead.
 
 If the task has not started yet, it is closed without running its function.
 
@@ -302,11 +302,15 @@ The API keeps async checkpoints separate from synchronous waits:
 | `task:on_complete(cb)` | Any context | Observe completion without blocking or starting a pending child task. |
 
 ```lua
-vim.async.run(function()
-  local stat = vim.async.await(2, vim.uv.fs_stat, "file.txt")
+async.run(function()
+  local err, stat = async.await(2, vim.uv.fs_stat, "file.txt")
+  assert(not err, err)
   print(stat and stat.type)
 end)
 ```
+
+Note: Callback results are returned unchanged, so libuv-style callbacks
+expose their leading error slot to the caller.
 
 `await(task)` fails with a Lua error if the awaited task failed or was closed.
 
@@ -315,7 +319,7 @@ the same forms as `await(...)` and returns a leading `ok` boolean instead of
 failing the task for an awaited-operation failure:
 
 ```lua
-local ok, value_or_err = vim.async.pawait(task)
+local ok, value_or_err = async.pawait(task)
 ```
 
 Use `pawait()` when the awaited task or operation is allowed to fail and the
@@ -350,17 +354,17 @@ when the parent reaches a checkpoint. A raw `pcall` around the await can
 therefore catch an unrelated child failure:
 
 ```lua
-vim.async.run(function()
-  local _child = vim.async.run(function()
-    vim.async.sleep(10)
+async.run(function()
+  local _child = async.run(function()
+    async.sleep(10)
     error("child failed")
   end)
 
   pcall(function()
-    vim.async.sleep(100)
+    async.sleep(100)
   end)
 
-  vim.async.sleep(1)
+  async.sleep(1)
 end)
 ```
 
@@ -381,8 +385,8 @@ Put recoverable async work in its own task and await that task with protected
 await (`pawait()`).
 
 ```lua
-vim.async.run(function()
-  local ok, result_or_err = vim.async.pawait(vim.async.run(function()
+async.run(function()
+  local ok, result_or_err = async.pawait(async.run(function()
     local user = fetch_user()
     local profile = fetch_profile(user.id)
     return build_view(profile)
@@ -426,7 +430,7 @@ end
 `try/finally`: clean up, then rethrow.
 
 ```lua
-vim.async.run(function()
+async.run(function()
   local file = assert(io.open("data.txt", "r"))
 
   local ok, result = pcall(function()
@@ -449,20 +453,20 @@ recover. Use `pcall` to catch their delivery long enough to run cleanup, then
 call `checkpoint()` to re-deliver the persistent state.
 
 ```lua
-vim.async.run(function()
-  local worker = vim.async.run(function()
+async.run(function()
+  local worker = async.run(function()
     while true do
       do_work()
-      vim.async.sleep(10)
+      async.sleep(10)
     end
   end)
 
   local ok, err = pcall(function()
-    vim.async.await(worker)
+    async.await(worker)
   end)
   cleanup()
 
-  vim.async.checkpoint()
+  async.checkpoint()
 
   if not ok then
     error(err, 0)
@@ -483,8 +487,8 @@ suspended at the checkpoint; if the task is cancelled before the operation
 completes, async.nvim closes the handle before resuming the task.
 
 ```lua
-vim.async.run(function()
-  vim.async.await(function(callback)
+async.run(function()
+  async.await(function(callback)
     local timer = vim.uv.new_timer()
     timer:start(1000, 0, callback)
     return timer
@@ -498,10 +502,10 @@ Child tasks are attached to their parent by default. `detach()` removes that
 parent ownership.
 
 ```lua
-local background = vim.async.run(function()
+local background = async.run(function()
   while true do
     do_background_work()
-    vim.async.sleep(1000)
+    async.sleep(1000)
   end
 end):detach()
 ```
@@ -513,16 +517,17 @@ it, cancels it, or receives its failures.
 
 `iter(tasks)` waits for existing task handles and yields them in completion
 order. Use `await(task)` or `pawait(task)` to get each completed task's result.
-This example races two tasks by taking the first completion:
+
+This example races two detached tasks by taking the first completion:
 
 ```lua
-vim.async.run(function()
-  local cache = vim.async.run(fetch_from_cache)
-  local network = vim.async.run(fetch_from_network)
+async.run(function()
+  local cache = async.run(fetch_from_cache):detach()
+  local network = async.run(fetch_from_network):detach()
 
-  local next_task = vim.async.iter({ cache, network })
+  local next_task = async.iter({ cache, network })
   local winner = next_task()
-  local ok, result_or_err = vim.async.pawait(winner)
+  local ok, result_or_err = async.pawait(winner)
 
   if winner == cache then
     network:close()
@@ -542,29 +547,29 @@ end)
 the task is closed and `timeout()` fails with the Lua error value `"timeout"`.
 
 ```lua
-local result = vim.async.run(function()
-  local task = vim.async.run(long_operation)
-  return vim.async.timeout(5000, task)
+local result = async.run(function()
+  local task = async.run(long_operation)
+  return async.timeout(5000, task)
 end):wait()
 ```
 
 `semaphore(permits)` bounds how many tasks can enter a section at once:
 
 ```lua
-vim.async.run(function()
-  local semaphore = vim.async.semaphore(3)
+async.run(function()
+  local semaphore = async.semaphore(3)
   local tasks = {}
 
   for i = 1, 10 do
-    tasks[i] = vim.async.run(function()
+    tasks[i] = async.run(function()
       semaphore:with(function()
         process_item(i)
       end)
     end)
   end
 
-  for task in vim.async.iter(tasks) do
-    vim.async.await(task)
+  for task in async.iter(tasks) do
+    async.await(task)
   end
 end)
 ```
@@ -580,7 +585,7 @@ Swift task groups: child work is owned by a scope, parents wait for children,
 errors propagate, and cancellation flows down.
 
 The shape is different because Lua has stackful coroutines and no async
-syntax. `vim.async.run()` creates both the task and the scope; there is no
+syntax. `async.run()` creates both the task and the scope; there is no
 separate nursery object.
 
 JavaScript promises and Go goroutines are more unstructured by default. Work can

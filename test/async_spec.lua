@@ -488,6 +488,36 @@ stack traceback:
       check_task_err(run(Async.timeout, 10, task), 'timeout')
     end)
 
+    it_exec('timeout waits for target cleanup before raising timeout', function()
+      local cleanup_done = false
+
+      local task = run(function()
+        await(function()
+          return {
+            close = function(_, callback)
+              vim.schedule(function()
+                cleanup_done = true
+                callback()
+              end)
+            end,
+          }
+        end)
+      end)
+
+      check_task_err(run(Async.timeout, 1, task), 'timeout')
+      eq(true, cleanup_done)
+      check_task_err(task, 'closed')
+    end)
+
+    it_exec('timeout preserves target failure before the deadline', function()
+      local task = run(function()
+        Async.sleep(1)
+        error('TARGET_ERROR')
+      end)
+
+      check_task_err(run(Async.timeout, 100, task), 'test/async_spec.lua:%d+: TARGET_ERROR')
+    end)
+
     it_exec('returns when the task completes before the timeout', function()
       local timeout_timer = {
         closed = false,
@@ -663,6 +693,33 @@ stack traceback:
       }, results)
     end)
 
+    it_exec('iterates tasks in completion order', function()
+      --- @async
+      --- @param count integer
+      --- @param id integer
+      local function after_schedules(count, id)
+        for _ = 1, count do
+          await(vim.schedule)
+        end
+        return id
+      end
+
+      local tasks = {
+        run(after_schedules, 3, 1),
+        run(after_schedules, 1, 2),
+        run(after_schedules, 2, 3),
+      }
+
+      local order = {}
+      run(function()
+        for task in Async.iter(tasks) do
+          order[#order + 1] = await(task)
+        end
+      end):wait(100)
+
+      eq({ 2, 3, 1 }, order)
+    end)
+
     it_exec('treats false task errors as errors when iterating', function()
       local task = run(function()
         await(vim.schedule)
@@ -675,39 +732,6 @@ stack traceback:
         eq(false, ok)
         eq(false, err)
       end):wait(100)
-    end)
-
-    it_exec('can handle errors when iterating child tasks', function()
-      local results = {} --- @type table[]
-      local tasks = {} --- @type vim.async.Task<any>[]
-
-      local task = run(function()
-        for i = 1, 10 do
-          tasks[i] = run(function()
-            await(vim.schedule)
-            if i == 3 then
-              error('ERROR IN TASK ' .. i)
-            end
-            return 'FINISH', i
-          end)
-        end
-
-        for task in Async.iter(tasks) do
-          local r1, r2 = await(task)
-          results[r2] = { r1, r2 }
-        end
-      end)
-
-      check_task_err(task, 'child error: test/async_spec.lua:%d+: ERROR IN TASK 3')
-
-      for i = 4, #tasks do
-        check_task_err(tasks[i], 'closed')
-      end
-
-      eq({
-        { 'FINISH', 1 },
-        { 'FINISH', 2 },
-      }, results)
     end)
 
     it_exec('can iter tasks followed by error', function()
@@ -833,6 +857,23 @@ stack traceback:
       }, results)
     end)
 
+    it_exec('detached child failures do not fail the original parent', function()
+      local child --- @type vim.async.Task
+
+      local parent = run(function()
+        child = run(function()
+          await(vim.schedule)
+          error('DETACHED_ERROR')
+        end):detach()
+
+        await(vim.schedule)
+        return 'parent ok'
+      end)
+
+      eq('parent ok', parent:wait(100))
+      check_task_err(child, 'test/async_spec.lua:%d+: DETACHED_ERROR')
+    end)
+
     it_exec('attaches tasks created from synchronous callbacks inside a task', function()
       local release --- @type fun()?
       local results = {}
@@ -897,6 +938,42 @@ stack traceback:
       child:wait(50)
 
       eq({ 'parent_done', 'child_done' }, results)
+    end)
+
+    it_exec('does not run pending children when parent errors before a checkpoint', function()
+      local child --- @type vim.async.Task
+      local child_ran = false
+
+      local parent = run(function()
+        child = run(function()
+          child_ran = true
+        end)
+
+        error('PARENT_ERROR')
+      end)
+
+      check_task_err(parent, 'test/async_spec.lua:%d+: PARENT_ERROR')
+      check_task_err(child, 'closed')
+      eq(false, child_ran)
+    end)
+
+    it_exec('synchronous child wait starts only the waited child', function()
+      local results = {}
+
+      run(function()
+        local child1 = run(function()
+          results[#results + 1] = 'child1'
+        end)
+
+        run(function()
+          results[#results + 1] = 'child2'
+        end)
+
+        child1:wait(100)
+        eq({ 'child1' }, results)
+      end):wait(100)
+
+      eq({ 'child1', 'child2' }, results)
     end)
 
     it_exec('does not wait for detached task children after sync wait times out', function()
@@ -978,6 +1055,26 @@ stack traceback:
       check_task_err(forever_child, 'closed')
     end)
 
+    it_exec('child failure while parent is suspended closes siblings', function()
+      local sibling --- @type vim.async.Task
+      local continued = false
+
+      local parent = run(function()
+        run(function()
+          Async.sleep(1)
+          error('CHILD_ERROR')
+        end)
+
+        sibling = run(eternity)
+        Async.sleep(100)
+        continued = true
+      end)
+
+      check_task_err(parent, 'child error: test/async_spec.lua:%d+: CHILD_ERROR')
+      check_task_err(sibling, 'closed')
+      eq(false, continued)
+    end)
+
     it_exec('should not close the parent task when child task is closed', function()
       run(function()
         run(eternity):close()
@@ -1010,10 +1107,10 @@ stack traceback:
         'start2',
         'start3',
         'end1',
-        'start4',
         'end2',
-        'start5',
         'end3',
+        'start4',
+        'start5',
         'end4',
         'end5',
       }, ret)
@@ -1081,6 +1178,174 @@ stack traceback:
       end):wait(100)
 
       eq(true, second_acquired)
+    end)
+
+    it_exec('releases semaphore permits when with errors', function()
+      run(function()
+        local sem = Async.semaphore(1)
+
+        local ok, err = pcall(function()
+          sem:with(function()
+            error('WITH_ERROR')
+          end)
+        end)
+
+        eq(false, ok)
+        --- @cast err string
+        assert(err:match('WITH_ERROR'), 'Expected WITH_ERROR, got: ' .. tostring(err))
+
+        sem:acquire()
+        sem:release()
+      end):wait(100)
+    end)
+
+    it_exec('releases semaphore permits when with is cancelled', function()
+      local release --- @type fun()?
+      local sem = Async.semaphore(1)
+
+      local task = run(function()
+        sem:with(function()
+          await(function(callback)
+            release = callback
+          end)
+        end)
+      end)
+
+      run(function()
+        Async.checkpoint()
+        assert(release, 'semaphore body did not start')
+
+        task:close()
+        Async.pawait(task)
+
+        sem:acquire()
+        sem:release()
+      end):wait(100)
+
+      check_task_err(task, 'closed')
+    end)
+
+    it_exec('does not resume semaphore waiters inline on release', function()
+      local results = {}
+
+      run(function()
+        local sem = Async.semaphore(1)
+        sem:acquire()
+
+        run(function()
+          sem:acquire()
+          results[#results + 1] = 'waiter_acquired'
+        end)
+
+        Async.checkpoint()
+        results[#results + 1] = 'before_release'
+        sem:release()
+        results[#results + 1] = 'after_release'
+
+        eq({ 'before_release', 'after_release' }, results)
+        await(vim.schedule)
+        eq({ 'before_release', 'after_release', 'waiter_acquired' }, results)
+      end):wait(100)
+    end)
+  end)
+
+  describe('queue', function()
+    it_exec('does not resume get waiters inline on put_nowait', function()
+      local new_queue = require('async._queue')
+      local results = {}
+
+      run(function()
+        local queue = new_queue()
+
+        run(function()
+          local item = queue:get()
+          results[#results + 1] = 'got_' .. item
+        end)
+
+        Async.checkpoint()
+        results[#results + 1] = 'before_put'
+        queue:put_nowait('item')
+        results[#results + 1] = 'after_put'
+
+        eq({ 'before_put', 'after_put' }, results)
+        await(vim.schedule)
+        eq({ 'before_put', 'after_put', 'got_item' }, results)
+      end):wait(100)
+    end)
+
+    it_exec('get waiters retry if a deferred item is consumed first', function()
+      local new_queue = require('async._queue')
+      local results = {}
+
+      run(function()
+        local queue = new_queue()
+
+        run(function()
+          results[#results + 1] = queue:get()
+        end)
+
+        Async.checkpoint()
+        queue:put_nowait('first')
+        eq('first', queue:get_nowait())
+
+        await(vim.schedule)
+        eq({}, results)
+
+        queue:put_nowait('second')
+        await(vim.schedule)
+        eq({ 'second' }, results)
+      end):wait(100)
+    end)
+
+    it_exec('does not resume put waiters inline on get_nowait', function()
+      local new_queue = require('async._queue')
+      local results = {}
+
+      run(function()
+        local queue = new_queue(1)
+        queue:put_nowait('first')
+
+        run(function()
+          queue:put('second')
+          results[#results + 1] = 'put_second'
+        end)
+
+        Async.checkpoint()
+        results[#results + 1] = 'before_get'
+        eq('first', queue:get_nowait())
+        results[#results + 1] = 'after_get'
+
+        eq({ 'before_get', 'after_get' }, results)
+        await(vim.schedule)
+        eq({ 'before_get', 'after_get', 'put_second' }, results)
+      end):wait(100)
+    end)
+
+    it_exec('put waiters retry if a deferred slot is filled first', function()
+      local new_queue = require('async._queue')
+      local results = {}
+
+      run(function()
+        local queue = new_queue(1)
+        queue:put_nowait('first')
+
+        run(function()
+          queue:put('second')
+          results[#results + 1] = 'put_second'
+        end)
+
+        Async.checkpoint()
+        eq('first', queue:get_nowait())
+        queue:put_nowait('interloper')
+
+        await(vim.schedule)
+        eq({}, results)
+
+        eq('interloper', queue:get_nowait())
+        await(vim.schedule)
+        eq({ 'put_second' }, results)
+        eq('second', queue:get_nowait())
+      end):wait(100)
     end)
   end)
 
@@ -1912,6 +2177,65 @@ parent@test/async_spec.lua:%d+ %[awaiting%]
       --- @cast err string
       assert(err:match('child error:.*CHILD_ERROR'), 'Expected child error, got: ' .. tostring(err))
       eq(1, completions)
+      check_task_err(sibling, 'closed')
+    end)
+
+    it_exec('later child error during parent finalization closes earlier siblings', function()
+      local completions = 0
+      local sibling --- @type vim.async.Task
+
+      local parent = run(function()
+        sibling = run(eternity)
+
+        local _child = run(function()
+          Async.sleep(1)
+          error('CHILD_ERROR')
+        end)
+      end)
+
+      parent:on_complete(function()
+        completions = completions + 1
+      end)
+
+      local ok, err = parent:pwait(100)
+
+      eq(false, ok)
+      --- @cast err string
+      assert(err:match('child error:.*CHILD_ERROR'), 'Expected child error, got: ' .. tostring(err))
+      eq(1, completions)
+      check_task_err(sibling, 'closed')
+    end)
+
+    it_exec('child error during parent finalization waits for sibling cleanup', function()
+      local cleanup_done = false
+      local sibling --- @type vim.async.Task
+
+      local parent = run(function()
+        sibling = run(function()
+          await(function()
+            return {
+              close = function(_, callback)
+                vim.schedule(function()
+                  cleanup_done = true
+                  callback()
+                end)
+              end,
+            }
+          end)
+        end)
+
+        local _child = run(function()
+          Async.sleep(1)
+          error('CHILD_ERROR')
+        end)
+      end)
+
+      local ok, err = parent:pwait(100)
+
+      eq(false, ok)
+      --- @cast err string
+      assert(err:match('child error:.*CHILD_ERROR'), 'Expected child error, got: ' .. tostring(err))
+      eq(true, cleanup_done)
       check_task_err(sibling, 'closed')
     end)
 

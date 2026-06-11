@@ -9,7 +9,7 @@ local validate = require('async._compat').validate
 --- @field wait? fun(timeout: integer, predicate: fun(): boolean): boolean Run the event loop until the predicate succeeds or the timeout expires.
 --- @field schedule? fun(callback: fun()) Run a callback on the next event loop turn.
 --- @field new_timer? vim.async.TimerFactory Create libuv-compatible timers for `sleep()` and `timeout()`.
---- @field debug? boolean Capture extra task debugging metadata.
+--- @field debug? boolean Capture task creation metadata for debugging.
 
 --- @class vim.async.Runtime
 --- @field wait fun(timeout: integer, predicate: fun(): boolean): boolean

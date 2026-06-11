@@ -137,7 +137,7 @@ function M.timeout(duration, task)
   M.pawait(timer)
 
   if timed_out then
-    error('timeout')
+    error('timeout', 0)
   end
 
   if not result[1] then

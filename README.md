@@ -46,8 +46,6 @@ async.config({
 true or the timeout expires. `schedule(callback)` must run `callback` on a later
 event-loop turn. `new_timer()` must create a libuv-compatible timer.
 
-Set `debug = true` to capture task creation locations for inspection output.
-
 ## Waiting And Awaiting
 
 | API | Context | Behavior |
@@ -173,8 +171,8 @@ already-pending failure on the current task.
 ```lua
 async.run(function()
   local tasks = {
-    async.run(fetch_from_cache),
-    async.run(fetch_from_network),
+    async.run(fetch_from_cache):detach(),
+    async.run(fetch_from_network):detach(),
   }
 
   local winner = async.iter(tasks)()
