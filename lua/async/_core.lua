@@ -304,7 +304,7 @@ do --- Task
   --- before child code runs. At await checkpoints and successful parent finish,
   --- any remaining pending children must start so implicit waits, cancellation,
   --- and inspection see the full task tree.
-  --- @private
+  --- @package
   function Task:_start_pending_children()
     for i = 1, self._children_idx do
       local child = self._children[i]
@@ -315,7 +315,7 @@ do --- Task
   end
 
   --- Keep the first task error. The error can be any non-nil Lua value.
-  --- @private
+  --- @package
   --- @param err any
   --- @return any
   function Task:_set_error(err)
@@ -425,7 +425,7 @@ do --- Task
       end
     end
 
-    --- @private
+    --- @package
     --- @param stat boolean
     --- @param ... R... result
     function Task:_finalize(stat, ...)
@@ -475,59 +475,6 @@ do --- Task
       await_children:_start()
     end
 
-    --- @param thread thread
-    --- @param on_finish fun(stat: boolean, ...: any)
-    --- @param stat boolean
-    --- @return fun(callback: fun(...: any...): vim.async.Closable?)?
-    local function handle_co_resume(thread, on_finish, stat, ...)
-      if coroutine.status(thread) == 'dead' then
-        on_finish(stat, ...)
-        return
-      end
-
-      local marker, fn = ...
-
-      if marker ~= yield_marker or not is_callable(fn) then
-        on_finish(false, yield_error)
-        return
-      end
-
-      return fn
-    end
-
-    --- @param awaitable fun(callback: fun(...: any...): vim.async.Closable?)
-    --- @param on_defer fun(awaiting: any, err?: any, ...: any)
-    --- @return any[]? next_args
-    --- @return vim.async.Closable? closable
-    local function handle_awaitable(awaitable, on_defer)
-      local ok, closable_or_err
-      local settled = false
-      local next_args --- @type any[]?
-      ok, closable_or_err = pcall(awaitable, function(...)
-        if settled then
-          -- error here?
-          return
-        end
-        settled = true
-
-        -- If the callback runs before pcall() returns, keep looping in the
-        -- current stack. Otherwise the callback resumes the task later.
-        if ok == nil then
-          next_args = pack_len(...)
-        else
-          on_defer(closable_or_err, ...)
-        end
-      end)
-
-      if not ok then
-        return pack_len(errors.normalize(closable_or_err))
-      elseif is_closable(closable_or_err) then
-        return next_args, closable_or_err
-      else
-        return next_args
-      end
-    end
-
     --- @param task vim.async.Task<any>
     --- @param awaiting vim.async.Task<any> | vim.async.Closable
     --- @return boolean
@@ -545,114 +492,153 @@ do --- Task
       return false
     end
 
-    --- Handle closing an awaitable if needed
     --- @param task vim.async.Task<any>
-    --- @param awaiting vim.async.Closable?
-    --- @param on_continue fun()
-    --- @return boolean should_return
-    --- @return {[integer]: any, n: integer}? new_args
-    local function handle_close_awaiting(task, awaiting, on_continue)
-      if not awaiting or not can_close_awaiting(task, awaiting) then
-        return false, nil
+    --- @param stat boolean
+    --- @param ... any
+    local function finalize_resume(task, stat, ...)
+      -- If pcall swallowed a child error or close signal, don't let a later
+      -- normal return overwrite the pending task failure.
+      if task._error ~= nil and stat then
+        task:_finalize(false, task._error)
+      elseif task._closing and stat then
+        task:_finalize(false, 'closed')
+      else
+        task:_finalize(stat, ...)
+      end
+    end
+
+    --- @param task vim.async.Task<any>
+    --- @param stat boolean
+    --- @param ... any
+    local function handle_resume_result(task, stat, ...)
+      if coroutine.status(task._thread) == 'dead' then
+        finalize_resume(task, stat, ...)
+        return
       end
 
-      -- Check if the awaitable is already closing (if it has an is_closing method)
-      local already_closing = false
-      if type(awaiting.is_closing) == 'function' then
-        already_closing = awaiting:is_closing()
+      local marker, awaitable = ...
+      if marker ~= yield_marker or not is_callable(awaitable) then
+        finalize_resume(task, false, yield_error)
+        return
       end
 
-      if already_closing then
-        -- Already closing, just continue without calling close
-        task._awaiting = nil
-        on_continue()
-        return true, nil
-      end
+      local settled = false
+      local in_setup = true
+      local sync_n, sync_arg
+      --- @type {[integer]: any, n: integer}?
+      local sync_args
 
-      -- We must close the closable child before we resume to ensure
-      -- all resources are collected.
-      --- @diagnostic disable-next-line: param-type-not-match
-      local close_ok, close_err = pcall(awaiting.close, awaiting, function()
-        task._awaiting = nil
-        on_continue()
+      local ok, awaiting_or_err
+      ok, awaiting_or_err = pcall(awaitable, function(...)
+        if settled then
+          return
+        end
+        settled = true
+
+        -- If the callback runs before pcall() returns, tail-call the next
+        -- step after setup finishes. Otherwise resume from the callback turn.
+        if in_setup then
+          sync_n = select('#', ...)
+          if sync_n == 1 then
+            sync_arg = ...
+          elseif sync_n > 1 then
+            sync_args = pack_len(...)
+          end
+        else
+          if is_task(awaiting_or_err) and select(1, ...) ~= nil then
+            task:_set_error(select(1, ...))
+          end
+          if not task:completed() then
+            return task:_resume(...)
+          end
+        end
       end)
+      in_setup = false
 
-      if close_ok then
-        -- will call on_continue in close callback
-        return true, nil
+      if not ok then
+        return task:_resume(errors.normalize(awaiting_or_err))
+      elseif is_closable(awaiting_or_err) then
+        task._awaiting = awaiting_or_err
+      else
+        task._awaiting = nil
       end
 
-      -- Close failed (synchronously) raise error
-      return false, pack_len(errors.normalize(close_err))
+      if is_task(task._awaiting) then
+        task._awaiting:_start()
+      end
+      if task:completed() then
+        return
+      end
+      task:_start_pending_children()
+      if sync_n ~= nil then
+        if is_task(task._awaiting) then
+          if sync_n == 1 then
+            task:_set_error(sync_arg)
+          elseif sync_n > 1 then
+            --- @cast sync_args -nil
+            task:_set_error(sync_args[1])
+          end
+        end
+
+        if sync_n == 0 then
+          return task:_resume()
+        elseif sync_n == 1 then
+          return task:_resume(sync_arg)
+        end
+
+        --- @cast sync_args -nil
+        return task:_resume(unpack_len(sync_args))
+      end
     end
 
     --- @package
     --- @param ... any the first argument is the error, except for when the coroutine begins
     function Task:_resume(...)
-      --- @type { [integer]: any, n: integer }?
-      local args = pack_len(...)
-
-      -- Run this block in a while loop to run non-deferred continuations
-      -- without a new stack frame.
-      while args do
-        if args[1] == nil and is_task(self._awaiting) and self._awaiting:completed() then
-          -- A completed child is traceback context only while its error is
-          -- being delivered through raw await(). Successful and protected
-          -- resumes must not let that old child hide this task's own frames.
-          self._awaiting = nil
-        end
-
-        local should_return, close_err_args = handle_close_awaiting(self, self._awaiting, function()
-          self:_resume(unpack_len(args))
-        end)
-        if should_return then
-          return
-        end
-
-        args = close_err_args or args
-
-        -- Check the coroutine is still alive before trying to resume it
-        if coroutine.status(self._thread) == 'dead' then
-          -- Can only happen if coroutine.resume() is called outside of this
-          -- function. When that happens check_yield() will error the coroutine
-          -- which puts it in the 'dead' state.
-          self:_finalize(false, unpack_len(args))
-          return
-        end
-
-        local awaitable = handle_co_resume(self._thread, function(stat2, ...)
-          -- If pcall swallowed a child error or close signal, don't let a
-          -- later normal return overwrite the pending task failure.
-          if self._error ~= nil and stat2 then
-            self:_finalize(false, self._error)
-          elseif self._closing and stat2 then
-            self:_finalize(false, 'closed')
-          else
-            self:_finalize(stat2, ...)
-          end
-        end, coroutine.resume(self._thread, resume_marker, unpack_len(args)))
-
-        if not awaitable then
-          return
-        end
-
-        args, self._awaiting = handle_awaitable(awaitable, function(awaiting, ...)
-          if is_task(awaiting) and select(1, ...) ~= nil then
-            self:_set_error(select(1, ...))
-          end
-          if not self:completed() then
-            self:_resume(...)
-          end
-        end)
-
-        if is_task(self._awaiting) then
-          self._awaiting:_start()
-        end
-        self:_start_pending_children()
-        if args and is_task(self._awaiting) and args[1] ~= nil then
-          self:_set_error(args[1])
-        end
+      if select(1, ...) == nil and is_task(self._awaiting) and self._awaiting:completed() then
+        -- A completed child is traceback context only while its error is
+        -- being delivered through raw await(). Successful and protected
+        -- resumes must not let that old child hide this task's own frames.
+        self._awaiting = nil
       end
+
+      local awaiting = self._awaiting
+      if awaiting and can_close_awaiting(self, awaiting) then
+        local already_closing = false
+        if type(awaiting.is_closing) == 'function' then
+          already_closing = awaiting:is_closing()
+        end
+
+        if already_closing then
+          self._awaiting = nil
+          return self:_resume(...)
+        end
+
+        local args = pack_len(...)
+        -- We must close the closable child before we resume to ensure
+        -- all resources are collected.
+        --- @diagnostic disable-next-line: param-type-not-match
+        local close_ok, close_err = pcall(awaiting.close, awaiting, function()
+          self._awaiting = nil
+          return self:_resume(unpack_len(args))
+        end)
+
+        if close_ok then
+          return
+        end
+        self._awaiting = nil
+        return self:_resume(errors.normalize(close_err))
+      end
+
+      -- Check the coroutine is still alive before trying to resume it
+      if coroutine.status(self._thread) == 'dead' then
+        -- Can only happen if coroutine.resume() is called outside of this
+        -- function. When that happens check_yield() will error the coroutine
+        -- which puts it in the 'dead' state.
+        self:_finalize(false, ...)
+        return
+      end
+
+      return handle_resume_result(self, coroutine.resume(self._thread, resume_marker, ...))
     end
   end
 
