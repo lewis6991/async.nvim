@@ -476,23 +476,6 @@ do --- Task
     end
 
     --- @param task vim.async.Task<any>
-    --- @param awaiting vim.async.Task<any> | vim.async.Closable
-    --- @return boolean
-    local function can_close_awaiting(task, awaiting)
-      if not is_task(awaiting) then
-        return true
-      end
-
-      for _, child in pairs(task._children) do
-        if child == awaiting then
-          return true
-        end
-      end
-
-      return false
-    end
-
-    --- @param task vim.async.Task<any>
     --- @param stat boolean
     --- @param ... any
     local function finalize_resume(task, stat, ...)
@@ -602,7 +585,8 @@ do --- Task
       end
 
       local awaiting = self._awaiting
-      if awaiting and can_close_awaiting(self, awaiting) then
+      -- Only close awaitables owned by this task; external tasks are observed.
+      if awaiting and (not is_task(awaiting) or awaiting._parent == self) then
         local already_closing = false
         if type(awaiting.is_closing) == 'function' then
           already_closing = awaiting:is_closing()
@@ -728,6 +712,19 @@ end
 --- @param ... T... func arguments
 --- @return fun(callback: fun(...: R...))
 local function norm_cb_fun(argc, fun, ...)
+  if argc == 1 and select('#', ...) == 0 then
+    -- Avoid allocating an empty argument table for the common await(func) shape.
+    local cb_fun = fun
+    --- @cast cb_fun fun(callback: fun(...: any)): any?
+    --- @param callback fun(...: any)
+    --- @return any?
+    return function(callback)
+      return cb_fun(function(...)
+        callback(nil, ...)
+      end)
+    end
+  end
+
   local args = pack_len(...)
 
   --- @param callback fun(...: any)
