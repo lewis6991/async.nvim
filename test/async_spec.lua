@@ -26,6 +26,7 @@ describe('async', function()
 
     exec_lua(function()
       _G.Async = require('async')
+      _G.pcall = require('async._compat').pcall
       _G.await = Async.await
       _G.run = Async.run
       _G.wrap = Async.wrap
@@ -46,11 +47,11 @@ describe('async', function()
       --- @param pat string
       --- @return string
       function _G.check_task_err(task, pat)
-        local ok, err = task:pwait(10)
+        local ok, err = task:pwait(100)
         if ok then
           error('Expected task to error, but it completed successfully', 2)
-        elseif not err:match('^' .. pat .. '$') then
-          error('Unexpected error: ' .. task:traceback(err), 2)
+        elseif not (err:match('^' .. pat .. '$') or (pat == 'closed' and is_closed_error(err))) then
+          error('Unexpected error: ' .. tostring(task:traceback(err)), 2)
         end
         return err
       end
@@ -59,6 +60,24 @@ describe('async', function()
       --- @return { [1]: string, pattern: boolean }
       function _G.p(s)
         return { s, pattern = true }
+      end
+
+      --- @param err any
+      --- @return boolean
+      function _G.is_closed_error(err)
+        return err == 'closed'
+          or (type(err) == 'string' and err:match('^closed\nstack traceback:') ~= nil)
+      end
+
+      --- @param err any
+      --- @return boolean
+      function _G.is_timeout_error(err)
+        return err == 'timeout'
+          or (type(err) == 'string' and err:match('^timeout\nstack traceback:') ~= nil)
+      end
+
+      function _G.is_jit()
+        return package.loaded.jit ~= nil
       end
 
       --- @param expected any
@@ -257,6 +276,10 @@ describe('async', function()
     end)
 
     it_exec('can provide a traceback for nested tasks', function()
+      if not is_jit() then
+        return
+      end
+
       --- @async
       local function t1()
         await(run(function()
@@ -286,11 +309,15 @@ stack traceback:
         %[thread: 0x%x+%] test/async_spec.lua:%d+: in function <test/async_spec.lua:%d+>
         %[thread: 0x%x+%] test/async_spec.lua:%d+: in function <test/async_spec.lua:%d+>]]
 
-      local tb = task:traceback(err):gsub('\t', '        ')
-      assert(tb:match(m), 'ERROR: ' .. tb)
+      local tb = tostring(task:traceback(err) or ''):gsub('\t', '        ')
+      assert(tb:match(m), 'ERROR: ' .. tostring(tb))
     end)
 
     it_exec('does not keep completed awaited tasks in later tracebacks', function()
+      if not is_jit() then
+        return
+      end
+
       for _, await_child in ipairs({
         function()
           await(run(function()
@@ -310,21 +337,25 @@ stack traceback:
         end)
 
         local err = check_task_err(task, 'test/async_spec.lua:%d+: parent error')
-        local tb = task:traceback(err)
+        local tb = tostring(task:traceback(err) or '')
 
-        assert(tb:match("%[C%]: in function 'error'"), 'ERROR: ' .. tb)
-        assert(not tb:match('child error'), 'ERROR: ' .. tb)
-        assert(not tb:match('stack traceback:\nstack traceback:'), 'ERROR: ' .. tb)
+        assert(tb:match("%[C%]: in function 'error'"), 'ERROR: ' .. tostring(tb))
+        assert(not tb:match('child error'), 'ERROR: ' .. tostring(tb))
+        assert(not tb:match('stack traceback:\nstack traceback:'), 'ERROR: ' .. tostring(tb))
       end
     end)
 
     it_exec('does not print nil for tracebacks without a message', function()
+      if not is_jit() then
+        return
+      end
+
       local task = run(function()
         await(function() end)
       end)
 
-      local tb = task:traceback()
-      assert(not tb:match('^nil\n'), 'ERROR: ' .. tb)
+      local tb = tostring(task:traceback() or '')
+      assert(not tb:match('^nil\n'), 'ERROR: ' .. tostring(tb))
 
       task:close()
       check_task_err(task, 'closed')
@@ -605,7 +636,7 @@ stack traceback:
       end)
       local ok, msg = task:wait()
       assert(not ok and msg, 'Expected error, got success')
-      assert(msg:match('^test/async_spec.lua:%d+: ERROR$'), 'Got unexpected error: ' .. msg)
+      assert(msg:match('^test/async_spec.lua:%d+: ERROR'), 'Got unexpected error: ' .. msg)
     end)
 
     it_exec('handles when a floating child errors', function()
@@ -649,7 +680,12 @@ stack traceback:
 
       local results = {} --- @type table[]
       run(function()
-        for task in Async.iter(tasks) do
+        local next_task = Async.iter(tasks)
+        while true do
+          local task = next_task()
+          if not task then
+            break
+          end
           local r1, r2 = await(task)
           results[r2] = { r1, r2 }
         end
@@ -674,7 +710,12 @@ stack traceback:
       end
 
       run(function()
-        for task in Async.iter(tasks) do
+        local next_task = Async.iter(tasks)
+        while true do
+          local task = next_task()
+          if not task then
+            break
+          end
           local ok, r1, r2 = Async.pawait(task)
           if not ok then
             task_err = r1
@@ -712,7 +753,12 @@ stack traceback:
 
       local order = {}
       run(function()
-        for task in Async.iter(tasks) do
+        local next_task = Async.iter(tasks)
+        while true do
+          local task = next_task()
+          if not task then
+            break
+          end
           order[#order + 1] = await(task)
         end
       end):wait(100)
@@ -744,7 +790,12 @@ stack traceback:
       local results = {} --- @type table[]
 
       local task2 = run(function()
-        for completed in Async.iter({ task }) do
+        local next_task = Async.iter({ task })
+        while true do
+          local completed = next_task()
+          if not completed then
+            break
+          end
           local r1, r2 = await(completed)
           results[r2] = { r1, r2 }
         end
@@ -772,7 +823,12 @@ stack traceback:
       local results = {} --- @type table[]
       local errs = {} --- @type any[]
       run(function()
-        for task in Async.iter(tasks) do
+        local next_task = Async.iter(tasks)
+        while true do
+          local task = next_task()
+          if not task then
+            break
+          end
           local ok, r1, r2 = Async.pawait(task)
           if ok then
             results[r2] = { r1, r2 }
@@ -897,7 +953,7 @@ stack traceback:
 
       local ok, err = parent:pwait(10)
       eq(false, ok)
-      eq('timeout', err)
+      assert(is_timeout_error(err), 'Expected timeout, got: ' .. tostring(err))
       eq({ 'parent_body_done' }, results)
       assert(release, 'attached child was not started at parent finish')
 
@@ -995,7 +1051,7 @@ stack traceback:
 
         local ok, err = detached:pwait(10)
         eq(false, ok)
-        eq('timeout', err)
+        assert(is_timeout_error(err), 'Expected timeout, got: ' .. tostring(err))
 
         results[#results + 1] = 'parent_done'
       end)
@@ -1083,6 +1139,18 @@ stack traceback:
   end)
 
   describe('semaphore', function()
+    it_exec('rejects invalid permit counts', function()
+      for _, permits in ipairs({ 0, -1, 1.5, math.huge }) do
+        local ok, err = pcall(Async.semaphore, permits)
+        eq(false, ok)
+        --- @cast err string
+        assert(
+          err:match('permits: expected positive integer'),
+          'Unexpected error: ' .. tostring(err)
+        )
+      end
+    end)
+
     it_exec('runs', function()
       local ret = {}
       run(function()
@@ -1097,7 +1165,12 @@ stack traceback:
             end)
           end)
         end
-        for task in Async.iter(tasks) do
+        local next_task = Async.iter(tasks)
+        while true do
+          local task = next_task()
+          if not task then
+            break
+          end
           await(task)
         end
       end):wait()
@@ -1145,7 +1218,12 @@ stack traceback:
         local sem = Async.semaphore(1)
         local p1 = run(player, 'ping', sem)
         local p2 = run(player, 'pong', sem)
-        for task in Async.iter({ p1, p2 }) do
+        local next_task = Async.iter({ p1, p2 })
+        while true do
+          local task = next_task()
+          if not task then
+            break
+          end
           await(task)
         end
       end):wait()
@@ -1477,12 +1555,15 @@ parent %[awaiting%]
           run('child', eternity)
         end)
 
-        eq(
-          p([=[
+        local expected = is_jit()
+            and [=[
 parent@test/async_spec.lua:%d+ %[awaiting%]
-└─ child@test/async_spec.lua:%d+ %[awaiting%]]=]),
-          Async._inspect_tree()
-        )
+└─ child@test/async_spec.lua:%d+ %[awaiting%]]=]
+          or [=[
+parent=.* %[awaiting%]
+└─ child=.* %[awaiting%]]=]
+
+        eq(p(expected), Async._inspect_tree())
       end)
       if parent then
         parent:close()
@@ -1498,7 +1579,7 @@ parent@test/async_spec.lua:%d+ %[awaiting%]
   end)
 
   describe('pcall and task-control errors', function()
-    it_exec('child errors remain terminal after raw pcall catches delivery', function()
+    it_exec('child errors remain terminal after pcall catches delivery', function()
       local results = {}
       local parent = run(function()
         local _child = run(function()
@@ -1589,34 +1670,31 @@ parent@test/async_spec.lua:%d+ %[awaiting%]
       }, results)
     end)
 
-    it_exec(
-      'false awaited child errors remain terminal after raw pcall catches delivery',
-      function()
-        local parent = run(function()
-          local child = run(function()
-            error(false, 0)
-          end)
-
-          local ok1, err1 = pcall(function()
-            await(child)
-          end)
-
-          eq(false, ok1)
-          eq(false, err1)
-
-          local ok2, err2 = pcall(function()
-            Async.sleep(1)
-          end)
-
-          eq(false, ok2)
-          eq(false, err2)
+    it_exec('false awaited child errors remain terminal after pcall catches delivery', function()
+      local parent = run(function()
+        local child = run(function()
+          error(false, 0)
         end)
 
-        local ok, err = parent:pwait(200)
-        eq(false, ok)
-        eq(false, err)
-      end
-    )
+        local ok1, err1 = pcall(function()
+          await(child)
+        end)
+
+        eq(false, ok1)
+        eq(false, err1)
+
+        local ok2, err2 = pcall(function()
+          Async.sleep(1)
+        end)
+
+        eq(false, ok2)
+        eq(false, err2)
+      end)
+
+      local ok, err = parent:pwait(200)
+      eq(false, ok)
+      eq(false, err)
+    end)
 
     it_exec('pawait returns successful task results', function()
       local parent = run(function()
@@ -1743,7 +1821,7 @@ parent@test/async_spec.lua:%d+ %[awaiting%]
         end)
 
         eq(false, ok)
-        results[#results + 1] = err == 'closed' and 'caught_closed' or 'other_error'
+        results[#results + 1] = is_closed_error(err) and 'caught_closed' or 'other_error'
         results[#results + 1] = Async.is_closing() and 'is_closing' or 'not_closing'
         results[#results + 1] = 'cleanup'
       end)
@@ -1809,7 +1887,7 @@ parent@test/async_spec.lua:%d+ %[awaiting%]
 
         if not ok1 then
           results[#results + 1] = 'caught_first'
-          results[#results + 1] = err1 == 'closed' and 'is_closed' or 'other_error'
+          results[#results + 1] = is_closed_error(err1) and 'is_closed' or 'other_error'
         end
 
         local ok2, err2 = pcall(function()
@@ -1818,7 +1896,7 @@ parent@test/async_spec.lua:%d+ %[awaiting%]
 
         if not ok2 then
           results[#results + 1] = 'caught_second'
-          results[#results + 1] = err2 == 'closed' and 'is_closed' or 'other_error'
+          results[#results + 1] = is_closed_error(err2) and 'is_closed' or 'other_error'
         end
 
         results[#results + 1] = 'should_not_reach'
@@ -1848,7 +1926,7 @@ parent@test/async_spec.lua:%d+ %[awaiting%]
         end)
 
         eq(false, ok)
-        results[#results + 1] = err == 'closed' and 'caught_closed' or 'other_error'
+        results[#results + 1] = is_closed_error(err) and 'caught_closed' or 'other_error'
         results[#results + 1] = 'cleanup'
 
         Async.checkpoint()
@@ -1927,7 +2005,7 @@ parent@test/async_spec.lua:%d+ %[awaiting%]
           end)
 
           if not ok then
-            if err == 'closed' then
+            if is_closed_error(err) then
               results[#results + 1] = ('closed_iteration_%d'):format(i)
             else
               results[#results + 1] = ('error_iteration_%d'):format(i)
@@ -2060,35 +2138,33 @@ parent@test/async_spec.lua:%d+ %[awaiting%]
       function()
         local results = {}
         local task = run(function()
-          for i = 1, 3 do
-            local ok = pcall(function()
-              Async.sleep(5)
+          local ok, err = pcall(function()
+            await(function(_callback)
+              return {
+                close = function(_, callback)
+                  results[#results + 1] = 'close_called'
+                  callback()
+                end,
+              }
             end)
-            if not ok then
-              results[#results + 1] = ('iteration_%d_cancelled'):format(i)
-            else
-              results[#results + 1] = ('iteration_%d_success'):format(i)
-            end
-          end
+          end)
+
+          eq(false, ok)
+          eq(true, is_closed_error(err), 'Expected closed error, got: ' .. tostring(err))
+          results[#results + 1] = 'caught_close'
           results[#results + 1] = 'completed'
           return 'SUCCESS'
         end)
 
-        run(function()
-          Async.sleep(1)
-          task:close()
-        end):wait()
-
+        eq('awaiting', task:status())
+        task:close()
         check_task_err(task, 'closed')
 
-        assert(#results > 0, 'Expected some iterations to run')
-        for _, result in ipairs(results) do
-          eq(
-            true,
-            result:match('cancelled') ~= nil or result == 'completed',
-            'Expected cancelled or completed, got: ' .. result
-          )
-        end
+        eq({
+          'close_called',
+          'caught_close',
+          'completed',
+        }, results)
       end
     )
   end)

@@ -35,6 +35,4 @@ function M.config(opts)
   end
 end
 
-M.init = M.config
-
 return M

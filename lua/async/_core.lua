@@ -5,6 +5,7 @@ local future = require('async._future')
 local runtime = require('async._runtime')
 
 local is_callable = compat.is_callable
+local pcall = compat.pcall
 local validate = compat.validate
 local pack_len = util.pack_len
 local unpack_len = util.unpack_len
@@ -21,7 +22,7 @@ local threads = setmetatable({}, { __mode = 'k' })
 --- @return vim.async.Task<any>?
 local function running()
   --- @diagnostic disable-next-line: access-invisible, undefined-field
-  local task = threads[coroutine.running()]
+  local task = threads[compat.running()]
   if task and not task:completed() then
     return task
   end
@@ -65,7 +66,8 @@ end
 --- A coroutine-backed async operation and concurrency scope.
 ---
 --- Use [vim.async.run()] to create tasks. A task may be awaited by more than
---- one waiter.
+--- one waiter. When a task is created inside another task, it is attached to
+--- that parent and becomes part of the parent's concurrency scope.
 ---
 --- @class vim.async.Task<R>: vim.async.Closable
 --- @field package _thread thread
@@ -163,8 +165,11 @@ do --- Task
   --- If a timeout is provided, waits for the given time in milliseconds before
   --- failing with `"timeout"`. With no timeout, waits indefinitely.
   ---
+  --- This is for synchronous code. Inside a task, prefer [vim.async.await()] so
+  --- the current task suspends instead of pumping the event loop itself.
+  ---
   --- ```lua
-  --- local result = task:wait(10) -- wait for 10ms or else error
+  --- local result = task:wait(10) -- wait for 10ms or raise "timeout"
   ---
   --- local result = task:wait() -- wait indefinitely
   --- ```
@@ -192,9 +197,16 @@ do --- Task
     return unpack_len(res, 2)
   end
 
-  --- Protected-call version of `wait()`.
+  --- Protected-call version of [Task:wait()].
   ---
   --- Equivalent to `pcall(task.wait, task, timeout)`.
+  ---
+  --- ```lua
+  --- local ok, result_or_err = task:pwait(1000)
+  --- if not ok then
+  ---   vim.notify(tostring(result_or_err), vim.log.levels.ERROR)
+  --- end
+  --- ```
   --- @param timeout integer?
   --- @return boolean, R...
   function Task:pwait(timeout)
@@ -234,6 +246,20 @@ do --- Task
   ---
   --- The task becomes a top-level task.
   --- If it was waiting for a parent checkpoint, it is scheduled to start.
+  ---
+  --- Use this for background work that should not be cancelled when the
+  --- current task finishes. Detached task failures no longer fail the original
+  --- parent, so observe them explicitly with [Task:on_complete()],
+  --- [Task:wait()], or [vim.async.await()].
+  ---
+  --- ```lua
+  --- vim.async.run(function()
+  ---   while true do
+  ---     refresh_index()
+  ---     vim.async.sleep(1000)
+  ---   end
+  --- end):detach()
+  --- ```
   --- @return vim.async.Task<R>
   function Task:detach()
     local should_start = self._parent and not self._started and not self:completed()
@@ -255,7 +281,7 @@ do --- Task
   function Task:traceback(msg, level)
     level = level or 0
 
-    local thread = ('[%s] '):format(self._thread)
+    local thread = '[' .. tostring(self._thread) .. '] '
 
     local awaiting = self._awaiting
     if is_task(awaiting) then
@@ -263,8 +289,8 @@ do --- Task
     end
 
     local tblvl = is_task(awaiting) and 2 or nil
-    msg = (msg == nil and '' or tostring(msg))
-      .. debug.traceback(self._thread, '', tblvl):gsub('\n\t', '\n\t' .. thread)
+    local tb = debug.traceback(self._thread, '', tblvl) or ''
+    msg = (msg == nil and '' or tostring(msg)) .. tb:gsub('\n\t', '\n\t' .. thread)
 
     if level == 0 then
       --- @type string
@@ -355,6 +381,11 @@ do --- Task
   ---
   --- The optional callback observes task completion and may run immediately if
   --- the task has already completed.
+  ---
+  --- Closing is cooperative. The task observes the close request at a
+  --- checkpoint such as [vim.async.await()] or [vim.async.checkpoint()]. If the
+  --- task is suspended on an owned closable operation, that operation is closed
+  --- before the task reports `"closed"`.
   ---
   --- @param callback? fun()
   function Task:close(callback)
@@ -647,13 +678,12 @@ do --- Task
   end
 
   --- Returns the status of the task:
-  --- - 'running'    : task is running (that is, is called `status()`).
-  --- - 'normal'     : task is active but not running (e.g. it is starting
-  ---                  another task).
-  --- - 'awaiting'   : if the task is awaiting another task either directly via
-  ---                  `await()` or waiting for all children to complete.
-  --- - 'completed'  : task and all it's children have completed
-  --- @return 'running' | 'awaiting' | 'normal' | 'completed'
+  ---
+  --- - `"running"`: task is currently executing Lua code
+  --- - `"normal"`: task is active but another coroutine is running
+  --- - `"awaiting"`: task is suspended at a checkpoint or waiting for children
+  --- - `"completed"`: task and all attached children have completed
+  --- @return "running" | "awaiting" | "normal" | "completed"
   function Task:status()
     if self:completed() then
       return 'completed'
@@ -708,6 +738,33 @@ end
 ---
 --- Top-level tasks start immediately. Child tasks are attached immediately and
 --- first run when their parent reaches a checkpoint.
+---
+--- Creating a task decides ownership. Awaiting the task later only observes
+--- its result; it does not attach the task to the awaiter.
+---
+--- ```lua
+--- local async = vim.async
+---
+--- async.run(function()
+---   local child = async.run(function()
+---     return read_file('notes.txt')
+---   end)
+---
+---   local text = async.await(child)
+---   show_buffer(text)
+--- end)
+--- ```
+---
+--- A task created from synchronous code is top-level:
+---
+--- ```lua
+--- local task = vim.async.run(function()
+---   vim.async.sleep(100)
+---   return 'done'
+--- end)
+---
+--- print(task:wait())
+--- ```
 --- @generic T, R
 --- @param func async fun(...: T...): R...
 --- @param ... T... Arguments to pass to the function
@@ -800,6 +857,35 @@ end
 --- Accepts a task, a callback-taking function, or an argument position plus a
 --- callback-taking function. Raises awaited errors and current task-control
 --- errors.
+---
+--- The callback forms return callback arguments unchanged:
+---
+--- ```lua
+--- local async = vim.async
+---
+--- async.run(function()
+---   local err, stat = async.await(2, vim.uv.fs_stat, 'notes.txt')
+---   if err then
+---     error(err, 0)
+---   end
+---   print(stat.size)
+--- end)
+--- ```
+---
+--- If a callback API starts cancellable work, return a closable handle from the
+--- await callback. [Task:close()] will close that handle if cancellation
+--- arrives while the task is suspended there.
+---
+--- ```lua
+--- local async = vim.async
+---
+--- async.run(function()
+---   local lines = async.await(function(done)
+---     return start_read_lines('notes.txt', done)
+---   end)
+---   render(lines)
+--- end)
+--- ```
 --- @async
 --- @generic T, R
 --- @param ... any see overloads
@@ -814,12 +900,26 @@ end
 
 --- Protected await.
 ---
---- Async counterpart to `pcall()`. Accepts the same forms as `await()`, but
---- returns a leading `ok` boolean for awaited-operation failures.
+--- Async counterpart to `pcall()`. Accepts the same forms as
+--- [vim.async.await()], but returns a leading `ok` boolean for
+--- awaited-operation failures.
 ---
 --- Use this when the awaited task or operation is allowed to fail and the
 --- current task should continue. Cancellation or already pending failure from
 --- the current task is not protected.
+---
+--- ```lua
+--- local async = vim.async
+---
+--- async.run(function()
+---   local ok, text_or_err = async.pawait(async.run(read_file, 'notes.txt'))
+---   if not ok then
+---     text_or_err = ''
+---   end
+---
+---   show_buffer(text_or_err)
+--- end)
+--- ```
 --- @async
 --- @generic T, R
 --- @param ... any see overloads
@@ -860,6 +960,19 @@ end
 ---
 --- This starts pending child tasks and delivers pending cancellation or task
 --- failure from the current task.
+---
+--- Use this after cleanup code that catches an async failure or close signal,
+--- so persistent task state is delivered again before normal execution
+--- continues.
+---
+--- ```lua
+--- local ok, err = pcall(cleanup_sensitive_work)
+--- cleanup_resources()
+--- vim.async.checkpoint()
+--- if not ok then
+---   error(err, 0)
+--- end
+--- ```
 --- @async
 function M.checkpoint()
   M.await(function(callback)
@@ -870,6 +983,13 @@ end
 --- Returns true if the current task has been closed.
 ---
 --- Can be used in an async function to do cleanup when a task is closing.
+---
+--- ```lua
+--- while not vim.async.is_closing() do
+---   poll_once()
+---   vim.async.sleep(1000)
+--- end
+--- ```
 --- @return boolean
 function M.is_closing()
   local task = running()

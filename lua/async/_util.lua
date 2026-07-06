@@ -25,11 +25,11 @@ function M.gc_fun(f, gc)
   local proxy = newproxy(true)
   local proxy_mt = getmetatable(proxy)
   proxy_mt.__gc = gc
-  proxy_mt.__call = function(_, ...)
+
+  return function(...)
+    local _ = proxy
     return f(...)
   end
-
-  return proxy
 end
 
 return M

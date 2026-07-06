@@ -13,7 +13,6 @@ async.Task:wait()	lua-async.txt	/*async.Task:wait()*
 async.await()	lua-async.txt	/*async.await()*
 async.checkpoint()	lua-async.txt	/*async.checkpoint()*
 async.config()	lua-async.txt	/*async.config()*
-async.init()	lua-async.txt	/*async.init()*
 async.is_closing()	lua-async.txt	/*async.is_closing()*
 async.iter()	lua-async.txt	/*async.iter()*
 async.pawait()	lua-async.txt	/*async.pawait()*

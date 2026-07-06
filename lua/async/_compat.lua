@@ -1,6 +1,16 @@
+local safe_pcall = pcall
+local safe_running = coroutine.running
+local ok, coxpcall = pcall(require, 'coxpcall')
+if ok and type(coxpcall) == 'table' and type(coxpcall.pcall) == 'function' then
+  safe_pcall = coxpcall.pcall
+  safe_running = coxpcall.running or safe_running
+end
+
 local M = {}
 
 M._maxint = 2 ^ 32 - 1
+M.pcall = safe_pcall
+M.running = safe_running
 
 --- @param obj any
 --- @return boolean

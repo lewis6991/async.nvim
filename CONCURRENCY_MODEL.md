@@ -554,9 +554,10 @@ async.run(function()
 end)
 ```
 
-Lua code is still single-threaded. The semaphore limits how many tasks may be
-suspended inside the section at the same time, which is useful for external
-work such as requests, processes, or file operations.
+Lua code is still single-threaded. The semaphore limits how many tasks may hold
+a permit for the section at the same time. That is useful when the section
+starts external work such as requests, processes, or file operations and then
+awaits it.
 
 ## Runtime Integration
 

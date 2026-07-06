@@ -100,12 +100,17 @@ doc:
 		lua
 	./docgen.lua doc.json doc/lua-async.txt
 
-.PHONY: vendor-nvim
-vendor-nvim: build/nvim/async.lua
+VENDOR_NVIM_MODULES = _util _errors _runtime _future _core _event _queue _semaphore
+VENDOR_NVIM_MODULE_OUTPUTS = $(addprefix build/nvim/vim/async/,$(addsuffix .lua,$(VENDOR_NVIM_MODULES)))
+VENDOR_NVIM_OUTPUTS = build/nvim/vim/async.lua $(VENDOR_NVIM_MODULE_OUTPUTS) build/nvim/async_spec.lua
+VENDOR_NVIM_INPUTS = scripts/vendor_nvim.lua lua/*.lua lua/async/*.lua test/async_spec.lua
 
-build/nvim/async.lua: stylua emmylua
+.PHONY: vendor-nvim
+vendor-nvim: $(VENDOR_NVIM_OUTPUTS)
+
+$(VENDOR_NVIM_OUTPUTS) &: $(VENDOR_NVIM_INPUTS) stylua $(EMMYLUA_BIN)
 	mkdir -p build/nvim
-	nvim -l scripts/vendor_nvim.lua $@
-	./stylua build/nvim/async.lua
-	$(EMMYLUA_BIN) build/nvim/async.lua \
+	nvim -l scripts/vendor_nvim.lua build/nvim/vim/async.lua build/nvim/async_spec.lua
+	./stylua $(VENDOR_NVIM_OUTPUTS)
+	$(EMMYLUA_BIN) build/nvim/vim \
 		--config .emmyrc.vendor.json
