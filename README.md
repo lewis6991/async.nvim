@@ -43,8 +43,9 @@ async.config({
 ```
 
 `wait(timeout, predicate)` must pump the event loop until `predicate()` returns
-true or the timeout expires. `schedule(callback)` must run `callback` on a later
-event-loop turn. `new_timer()` must create a libuv-compatible timer.
+true or the timeout expires. `schedule(callback)` must queue `callback` to run
+once on a later event-loop turn.
+`new_timer()` must create a libuv-compatible timer.
 
 ## Waiting And Awaiting
 
