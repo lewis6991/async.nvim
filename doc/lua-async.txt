@@ -4,9 +4,8 @@
 Structured async API for Lua code that waits on event-loop work.
 
 `vim.async` lets Lua code wait for timers, callbacks, and other tasks
-without blocking Nvim's event loop. Async work runs inside tasks. A task can
-pause at checkpoints, resume on a later event-loop turn, and manage child
-tasks created while it is running.
+without blocking Nvim's event loop. Async work runs inside tasks, which can
+pause at checkpoints and manage child tasks created while they are running.
 
 Start async work with |vim.async.run()|. Inside a task, use
 |vim.async.await()| to wait for callback-style APIs or other tasks without
@@ -34,15 +33,11 @@ unchanged, so an error-first callback still returns `err, value`:
 local async = vim.async
 
 async.run(function()
-  local path = vim.api.nvim_buf_get_name(0)
-  local err, stat = async.await(2, vim.uv.fs_stat, path)
-
+  local err, stat = async.await(2, fs_stat, 'notes.txt')
   if err then
-    vim.notify(err, vim.log.levels.ERROR)
-    return
+    error(err, 0)
   end
-
-  vim.notify(('current buffer is %d bytes'):format(stat.size))
+  print(('notes.txt is %d bytes'):format(stat.size))
 end)
 <
 
@@ -67,9 +62,8 @@ is created.
 
 Scheduling is cooperative. When a task awaits a timer, I/O operation,
 callback, or another task, `vim.async` saves the Lua stack and returns
-control to the event loop. Other callbacks can run while the task is
-paused, and the task resumes on a later event-loop turn. Nothing interrupts
-synchronous Lua code in the middle of a stack frame.
+control to the event loop. Other callbacks can run while the task is paused.
+Nothing interrupts synchronous Lua code in the middle of a stack frame.
 
 Checkpoints are the places where a task can pause, start pending child
 tasks, observe cancellation, and receive unhandled child failures. Inside a
@@ -258,10 +252,10 @@ vim.async.pawait({...})                                       *async.pawait()*
 ------------------------------------------------------------------------------
 vim.async.checkpoint()                                    *async.checkpoint()*
 
-    Explicitly yield at a task checkpoint.
+    Start pending child tasks and deliver pending cancellation or task failure
+    from the current task.
 
-    This starts pending child tasks and delivers pending cancellation or task
-    failure from the current task.
+    This does not yield to the event loop.
 
     Use this after cleanup code that catches an async failure or close signal,
     so persistent task state is delivered again before normal execution
@@ -322,9 +316,9 @@ vim.async.config({opts})                                      *async.config()*
     Nvim or you want to override the detected runtime bindings.
 
     `opts.wait(timeout, predicate)` must run the event loop until `predicate`
-    returns true or the timeout expires. `opts.schedule(callback)` must defer a
-    callback to the next event loop turn. `opts.new_timer()` must create
-    libuv-compatible timers.
+    returns true or the timeout expires. `opts.schedule(callback)` must queue
+    the callback to run once on a later event-loop turn. `opts.new_timer()` must
+    create libuv-compatible timers.
 
     Parameters: ~
     - {opts} (`vim.async.ConfigOpts`) (See |vim.async.ConfigOpts|)
@@ -430,8 +424,9 @@ vim.async.sleep({duration})                                    *async.sleep()*
 
     Asynchronously sleep for a given duration.
 
-    Suspends the current task for the given duration, but does not block Nvim's
-    main loop.
+    Suspends the current task for the given duration without blocking the event
+    loop. After the delay and timer cleanup complete, `sleep()` returns to its
+    caller through the runtime's `schedule` hook.
 
     >lua
     vim.async.run(function()

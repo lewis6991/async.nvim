@@ -38,13 +38,12 @@ blocks everything else until it returns.
 
 async.nvim tasks run on that callback loop. When a task awaits a timer, I/O
 operation, or another task, async.nvim saves its Lua stack and returns control to
-the loop. Other ready callbacks can run while the task is paused. When the
-awaited work completes, async.nvim schedules the saved stack to resume.
+the loop. Other ready callbacks can run while the task is paused.
 
 This is cooperative scheduling: a task gives control back only when it returns,
 errors, or reaches a [checkpoint](#checkpoints). At a checkpoint, async.nvim can
-suspend the current stack, start child work, deliver cancellation or child
-failures, and later resume the task on another event-loop turn.
+suspend the current stack, start child work, and deliver cancellation or child
+failures.
 
 Nothing interrupts synchronous Lua code in the middle of a stack frame.
 
@@ -357,27 +356,57 @@ end)
 Callback results are returned unchanged, so error-first callbacks expose their
 leading error slot to the caller.
 
-When an awaited callback starts cancellable work, return that work's handle. A
-handle is closable when it provides a `close` method that accepts a callback to
-run after closing completes. async.nvim owns that handle while the task is
-suspended at the checkpoint.
+When an awaited callback starts cancellable work, return its handle to let
+`await()` manage cleanup. A handle is closable when it provides a `close` method
+that accepts a callback to run after closing completes. async.nvim owns the
+handle while the task is suspended and closes it before resuming.
+
+Here, `schedule(callback)` is the runtime's scheduling function. It may seem
+sufficient to use it for the operation's completion callback:
 
 ```lua
-async.run(function()
-  local err, text = async.await(function(done)
-    local handle = read_file_async("notes.txt", done)
-    return handle
+local err, text = async.await(function(done)
+  return read_file_async("notes.txt", function(err, text)
+    schedule(function()
+      done(err, text)
+    end)
   end)
-  assert(not err, err)
-  show_buffer(text)
 end)
+```
+
+However, `done` only starts automatic cleanup. If the returned handle closes
+asynchronously, `await()` waits for its close callback before resuming:
+
+```text
+schedule(...)
+  -> done()
+    -> handle:close()
+       ...cleanup completes asynchronously...
+
+close callback
+  -> task resumes
+    -> async.await() returns
+```
+
+The task therefore resumes directly from the close callback rather than through
+`schedule`.
+
+To run subsequent work through `schedule`, await it after the operation and its
+cleanup:
+
+```lua
+local err, text = async.await(function(done)
+  return read_file_async("notes.txt", done)
+end)
+async.await(schedule)
 ```
 
 ### Explicit Checkpoints and Synchronous Waits
 
-`checkpoint()` explicitly yields at a checkpoint without waiting for another
-operation. Use it after cleanup to re-deliver persistent task failure or
-cancellation.
+`checkpoint()` processes the current task's checkpoint without waiting for
+another operation or returning to the event loop. It starts pending direct
+children and re-delivers persistent task failure or cancellation. Await
+`schedule` for a full cooperative yield.
 
 From synchronous code, use `task:wait(...)` or `task:pwait(...)`. `wait()` fails
 with a Lua error on task failure or timeout. `pwait()` is the method-friendly
@@ -578,7 +607,8 @@ async.config({
 
 The runtime hooks do separate jobs:
 
-- `schedule(callback)` posts work to a later event-loop turn.
+- `schedule(callback)` queues the callback to run once on a later event-loop
+  turn.
 - `wait(timeout, predicate)` pumps the event loop while synchronous code waits
   for a task.
 - `new_timer()` creates timers for `sleep(...)` and `timeout(...)`.

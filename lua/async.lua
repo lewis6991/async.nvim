@@ -7,9 +7,8 @@ local util = require('async._util')
 --- Structured async API for Lua code that waits on event-loop work.
 ---
 --- `vim.async` lets Lua code wait for timers, callbacks, and other tasks
---- without blocking Nvim's event loop. Async work runs inside tasks. A task can
---- pause at checkpoints, resume on a later event-loop turn, and manage child
---- tasks created while it is running.
+--- without blocking Nvim's event loop. Async work runs inside tasks, which can
+--- pause at checkpoints and manage child tasks created while they are running.
 ---
 --- Start async work with [vim.async.run()]. Inside a task, use
 --- [vim.async.await()] to wait for callback-style APIs or other tasks without
@@ -37,15 +36,11 @@ local util = require('async._util')
 --- local async = vim.async
 ---
 --- async.run(function()
----   local path = vim.api.nvim_buf_get_name(0)
----   local err, stat = async.await(2, vim.uv.fs_stat, path)
----
+---   local err, stat = async.await(2, fs_stat, 'notes.txt')
 ---   if err then
----     vim.notify(err, vim.log.levels.ERROR)
----     return
+---     error(err, 0)
 ---   end
----
----   vim.notify(('current buffer is %d bytes'):format(stat.size))
+---   print(('notes.txt is %d bytes'):format(stat.size))
 --- end)
 --- ```
 ---
@@ -70,9 +65,8 @@ local util = require('async._util')
 ---
 --- Scheduling is cooperative. When a task awaits a timer, I/O operation,
 --- callback, or another task, `vim.async` saves the Lua stack and returns
---- control to the event loop. Other callbacks can run while the task is
---- paused, and the task resumes on a later event-loop turn. Nothing interrupts
---- synchronous Lua code in the middle of a stack frame.
+--- control to the event loop. Other callbacks can run while the task is paused.
+--- Nothing interrupts synchronous Lua code in the middle of a stack frame.
 ---
 --- Checkpoints are the places where a task can pause, start pending child
 --- tasks, observe cancellation, and receive unhandled child failures. Inside a
@@ -129,9 +123,9 @@ end
 --- Nvim or you want to override the detected runtime bindings.
 ---
 --- `opts.wait(timeout, predicate)` must run the event loop until `predicate`
---- returns true or the timeout expires. `opts.schedule(callback)` must defer a
---- callback to the next event loop turn. `opts.new_timer()` must create
---- libuv-compatible timers.
+--- returns true or the timeout expires. `opts.schedule(callback)` must queue
+--- the callback to run once on a later event-loop turn. `opts.new_timer()` must
+--- create libuv-compatible timers.
 ---
 --- @param opts vim.async.ConfigOpts
 function M.config(opts)
@@ -254,8 +248,9 @@ end
 
 --- Asynchronously sleep for a given duration.
 ---
---- Suspends the current task for the given duration, but does not block Nvim's
---- main loop.
+--- Suspends the current task for the given duration without blocking the event
+--- loop. After the delay and timer cleanup complete, `sleep()` returns to its
+--- caller through the runtime's `schedule` hook.
 ---
 --- ```lua
 --- vim.async.run(function()
@@ -272,6 +267,9 @@ function M.sleep(duration)
     timer:start(duration, 0, callback)
     return timer
   end)
+  -- Timer cleanup resumes this function directly from its close callback.
+  -- Yield once more so M.sleep() returns through the runtime scheduler.
+  M.await(runtime.schedule)
 end
 
 --- Await a task with a timeout.

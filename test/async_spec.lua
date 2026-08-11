@@ -165,6 +165,15 @@ describe('async', function()
       eq(true, done)
     end)
 
+    it_exec('resumes sleep outside a fast event', function()
+      local in_fast_event = run(function()
+        Async.sleep(0)
+        return vim.in_fast_event()
+      end):wait(100)
+
+      eq(false, in_fast_event)
+    end)
+
     it_exec('can await a run task', function()
       local a = run(function()
         return await(run(function()
@@ -436,9 +445,6 @@ stack traceback:
               end
             end
             return true
-          end,
-          schedule = function(callback)
-            callback()
           end,
           new_timer = vim.uv.new_timer,
         })

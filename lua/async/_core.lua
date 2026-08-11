@@ -366,7 +366,7 @@ do --- Task
   function Task:_raise(err)
     if self:status() == 'running' then
       -- A running coroutine cannot be resumed recursively, so deliver the
-      -- error on the next event-loop turn after the current stack unwinds.
+      -- error on a later event-loop turn after the current stack unwinds.
       runtime.schedule(function()
         if not self:completed() then
           self:_resume(err)
@@ -956,10 +956,10 @@ function M.pawait(...)
   return check_yield(coroutine.yield(yield_marker, protected_awaitable))
 end
 
---- Explicitly yield at a task checkpoint.
+--- Start pending child tasks and deliver pending cancellation or task failure
+--- from the current task.
 ---
---- This starts pending child tasks and delivers pending cancellation or task
---- failure from the current task.
+--- This does not yield to the event loop.
 ---
 --- Use this after cleanup code that catches an async failure or close signal,
 --- so persistent task state is delivered again before normal execution
