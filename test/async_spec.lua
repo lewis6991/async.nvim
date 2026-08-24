@@ -2236,6 +2236,23 @@ parent=.* %[awaiting%]
       assert(err:match('child error:.*CHILD_ERROR'), 'Expected child error, got: ' .. tostring(err))
     end)
 
+    it_exec('child error formatting cannot interrupt parent finalization', function()
+      local bad_error = setmetatable({}, {
+        __tostring = function()
+          error('TOSTRING_ERROR')
+        end,
+      })
+
+      local parent = run(function()
+        local _child = run(function()
+          Async.sleep(1)
+          error(bad_error, 0)
+        end)
+      end)
+
+      check_task_err(parent, 'child error: <unprintable error>')
+    end)
+
     it_exec('child error during parent finalization completes once and closes siblings', function()
       local completions = 0
       local sibling --- @type vim.async.Task

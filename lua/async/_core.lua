@@ -412,7 +412,7 @@ do --- Task
       return
     end
 
-    local task_err = self:_set_error('child error: ' .. tostring(err))
+    local task_err = self:_set_error('child error: ' .. errors.stringify(err))
     if self._finalizing_children then
       -- The parent coroutine is already dead, so sibling cleanup must wake the
       -- finalizer instead of trying to resume the parent.
@@ -503,7 +503,7 @@ do --- Task
             -- A close can arrive while normal finalization is awaiting
             -- children; from that point child errors are cleanup results.
             if not close_remaining and not self._closing and not ok and not child._closing then
-              self:_set_error('child error: ' .. tostring(err))
+              self:_set_error('child error: ' .. errors.stringify(err))
               close_remaining = true
               self:_close_children()
             end

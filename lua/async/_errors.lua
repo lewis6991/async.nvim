@@ -10,4 +10,13 @@ function M.normalize(err)
   return err == nil and nil_error or err
 end
 
+--- Convert an error value to a string without letting its metamethod interrupt
+--- task finalization.
+--- @param err any
+--- @return string
+function M.stringify(err)
+  local ok, message = pcall(tostring, err)
+  return ok and message or '<unprintable error>'
+end
+
 return M
