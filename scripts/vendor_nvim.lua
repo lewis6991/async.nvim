@@ -274,7 +274,14 @@ local function transform_test()
   output = replace_once_plain(
     output,
     "--- @diagnostic disable: global-in-non-module\nlocal helpers = require('nvim-test.helpers')\nlocal exec_lua = helpers.exec_lua\n",
-    "local n = require('test.functional.testnvim')()\nlocal exec_lua = n.exec_lua\n"
+    table.concat({
+      "local t = require('test.testutil')",
+      "local n = require('test.functional.testnvim')()",
+      'local describe, it, before_each, after_each =',
+      '  t.describe, t.it, t.before_each, t.after_each',
+      'local exec_lua = n.exec_lua',
+      '',
+    }, '\n')
   )
 
   output = replace_once_plain(output, '    helpers.clear()\n', '    n.clear()\n')
