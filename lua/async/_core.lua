@@ -499,9 +499,9 @@ do --- Task
         for i = 1, self._children_idx do
           local child = self._children[i]
           if child then
-            -- Finalization owns child failures here; don't let them re-enter
-            -- the dead parent coroutine and complete the future twice.
-            local ok, err = pcall(M.await, child)
+            -- Child failures are recorded on `self`. Protect this helper so one
+            -- failed child cannot stop it awaiting the remaining cleanup.
+            local ok, err = M.pawait(child)
             -- A close can arrive while normal finalization is awaiting
             -- children; from that point child errors are cleanup results.
             if not close_remaining and not self._closing and not ok and not child._closing then
@@ -551,6 +551,7 @@ do --- Task
     --- @param yielded vim.async.Task<any>|fun(callback: fun(err?: any, ...: any)): vim.async.Closable?
     --- @param protected boolean?
     local function start_await(task, yielded, protected)
+      -- TODO(#36): Defer task control until setup returns its cleanup handle.
       -- The first callback or setup failure settles the await.
       -- Ignore any callback that arrives afterwards.
       local settled = false
@@ -567,7 +568,9 @@ do --- Task
       local awaiting --- @type vim.async.Task<any>|vim.async.Closable?
 
       local function complete_await(err, ...)
-        if settled then
+        -- Cancellation and child failures resume through `_raise()`. Ignore a
+        -- racing result so `_resume()` can finish awaitable cleanup first.
+        if settled or task._closing or task._error ~= nil then
           return
         end
         settled = true

@@ -472,7 +472,7 @@ vim.async.timeout({duration}, {task})                        *async.timeout()*
     - {task} (`vim.async.Task<R>`)
 
     Returns: ~
-    - (`R`)
+    - (`R ...`)
 
 ==============================================================================
 *vim.async.Closable*

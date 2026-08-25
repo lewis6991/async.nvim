@@ -97,7 +97,7 @@ function Future:complete(err, ...)
   for _, cb in pairs(callbacks) do
     local ok, cb_err = pcall(cb, err, ...)
     if not ok then
-      errs[#errs + 1] = tostring(errors.normalize(cb_err))
+      errs[#errs + 1] = errors.stringify(errors.normalize(cb_err))
     end
   end
 

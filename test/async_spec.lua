@@ -2184,10 +2184,7 @@ parent=.* %[awaiting%]
         end
       end)
 
-      run(function()
-        Async.sleep(1)
-        task:close()
-      end):wait()
+      task:close()
 
       check_task_err(task, 'closed')
 
@@ -2466,6 +2463,82 @@ parent=.* %[awaiting%]
       check_task_err(sibling, 'closed')
     end)
 
+    it_exec('parent failure waits for every child cleanup', function()
+      local first_cleanup_done = false
+      local second_cleanup_done = false
+
+      local parent = run(function()
+        run(function()
+          await(function()
+            return {
+              close = function(_, callback)
+                first_cleanup_done = true
+                callback()
+              end,
+            }
+          end)
+        end)
+
+        run(function()
+          await(function()
+            return {
+              close = function(_, callback)
+                vim.schedule(function()
+                  second_cleanup_done = true
+                  callback()
+                end)
+              end,
+            }
+          end)
+        end)
+
+        Async.checkpoint()
+        error('PARENT_ERROR')
+      end)
+
+      local ok, err = parent:pwait(100)
+
+      eq(false, ok)
+      --- @cast err string
+      assert(err:match('PARENT_ERROR'), 'Expected parent error, got: ' .. tostring(err))
+      eq(true, first_cleanup_done)
+      eq(true, second_cleanup_done)
+    end)
+
+    it_exec('does not resume a closing task before awaitable cleanup', function()
+      local operation_callback --- @type fun(...: any)
+      local body_ran = false
+      local cleanup_done = false
+      local closable = { closing = false }
+
+      function closable:is_closing()
+        return self.closing
+      end
+
+      function closable:close(callback)
+        self.closing = true
+        operation_callback('RESULT')
+        vim.schedule(function()
+          cleanup_done = true
+          callback()
+        end)
+      end
+
+      local task = run(function()
+        Async.pawait(function(callback)
+          operation_callback = callback
+          return closable
+        end)
+        body_ran = true
+      end)
+
+      task:close()
+      check_task_err(task, 'closed')
+
+      eq(false, body_ran)
+      eq(true, cleanup_done)
+    end)
+
     it_exec('future complete is one-shot', function()
       local future = require('async._future')()
       future:complete(nil, 'first')
@@ -2541,6 +2614,31 @@ parent=.* %[awaiting%]
       eq(false, ok)
       --- @cast err string
       assert(err:match('error%(nil%)'), 'Unexpected error: ' .. tostring(err))
+    end)
+
+    it_exec('continues future callbacks after an unprintable error', function()
+      local future = require('async._future')()
+      local observed = false
+      local unprintable = setmetatable({}, {
+        __tostring = function()
+          error('TOSTRING_ERROR')
+        end,
+      })
+
+      future:on_complete(function()
+        error(unprintable)
+      end)
+      future:on_complete(function()
+        observed = true
+      end)
+
+      local ok, err = pcall(function()
+        future:complete(nil, 'value')
+      end)
+
+      eq(false, ok)
+      eq(true, observed)
+      assert(tostring(err):match('<unprintable error>'), 'Unexpected error: ' .. tostring(err))
     end)
 
     it_exec('callback called multiple times is handled gracefully', function()

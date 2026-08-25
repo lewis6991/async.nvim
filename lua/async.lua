@@ -291,7 +291,7 @@ end
 --- @generic R
 --- @param duration integer Timeout duration in milliseconds
 --- @param task vim.async.Task<R>
---- @return R
+--- @return R...
 function M.timeout(duration, task)
   compat.validate('duration', duration, 'number')
   compat.validate('task', task, 'table')
