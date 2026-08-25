@@ -901,6 +901,92 @@ stack traceback:
       t3:wait()
     end)
 
+    it_exec('stops observing external tasks when the waiter closes', function()
+      for _, wait in ipairs({ await, Async.pawait }) do
+        local external = run(eternity)
+        local waiter = run(function()
+          wait(external)
+        end)
+
+        waiter:close()
+        check_task_err(waiter, 'closed')
+
+        --- @diagnostic disable-next-line: access-invisible
+        local callback_count = vim.tbl_count(external._future._callbacks)
+        external:close()
+        check_task_err(external, 'closed')
+
+        eq(0, callback_count)
+      end
+    end)
+
+    it_exec('stops observing external tasks when a child fails', function()
+      for _, wait in ipairs({ await, Async.pawait }) do
+        local external = run(eternity)
+        local waiter = run(function()
+          run(function()
+            await(vim.schedule)
+            error('CHILD ERROR')
+          end)
+          wait(external)
+        end)
+
+        check_task_err(waiter, 'child error: test/async_spec.lua:%d+: CHILD ERROR')
+
+        --- @diagnostic disable-next-line: access-invisible
+        local callback_count = vim.tbl_count(external._future._callbacks)
+        external:close()
+        check_task_err(external, 'closed')
+
+        eq(0, callback_count)
+      end
+    end)
+
+    it_exec('stops observing children detached while being awaited', function()
+      for _, wait in ipairs({ await, Async.pawait }) do
+        local child --- @type vim.async.Task
+        local completions = 0
+        local parent = run(function()
+          child = run(eternity)
+          wait(child)
+        end)
+        parent:on_complete(function()
+          completions = completions + 1
+        end)
+
+        child:detach()
+        parent:close()
+        check_task_err(parent, 'closed')
+        eq(false, child:completed())
+
+        --- @diagnostic disable-next-line: access-invisible
+        local callback_count = vim.tbl_count(child._future._callbacks)
+        child:close()
+        check_task_err(child, 'closed')
+
+        eq(0, callback_count)
+        eq(1, completions)
+      end
+    end)
+
+    it_exec('ignores extra callback awaitable results', function()
+      for _, wait in ipairs({ await, Async.pawait }) do
+        local external = run(eternity)
+        local waiter = run(function()
+          wait(function()
+            return external, function()
+              error('EXTRA_RETURN_CALLED')
+            end
+          end)
+        end)
+
+        waiter:close()
+        check_task_err(waiter, 'closed')
+        external:close()
+        check_task_err(external, 'closed')
+      end
+    end)
+
     it_exec('detached pending child starts independently', function()
       local results = {}
 
@@ -1756,6 +1842,51 @@ parent=.* %[awaiting%]
       end)
 
       eq('parent ok', parent:wait(100))
+    end)
+
+    it_exec('pawait keeps synchronous results before a setup error', function()
+      local parent = run(function()
+        local function callback_then_error(callback)
+          callback('result')
+          error('LATE_SETUP_ERROR')
+        end
+
+        local ok, result = Async.pawait(callback_then_error)
+        eq({ true, 'result' }, { ok, result })
+
+        local raw_ok, err = pcall(await, callback_then_error)
+        eq(false, raw_ok)
+        assert(tostring(err):match('LATE_SETUP_ERROR'), tostring(err))
+      end)
+
+      parent:wait(100)
+    end)
+
+    it_exec('pawait ignores a late callback after setup fails', function()
+      local child --- @type vim.async.Task
+      local callback_ran = false
+      local parent = run(function()
+        child = run(function()
+          Async.sleep(5)
+          return 'child finished'
+        end)
+
+        local ok, err = Async.pawait(function(callback)
+          vim.schedule(function()
+            callback_ran = true
+            callback('late result')
+          end)
+          error('SETUP_ERROR')
+        end)
+
+        eq(false, ok)
+        assert(tostring(err):match('SETUP_ERROR'), tostring(err))
+        return 'parent finished'
+      end)
+
+      eq('parent finished', parent:wait(100))
+      eq(true, callback_ran)
+      eq('child finished', child:wait(100))
     end)
 
     it_exec('pawait returns synchronous child errors as data', function()
