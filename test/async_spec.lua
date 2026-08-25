@@ -2039,10 +2039,7 @@ parent=.* %[awaiting%]
         results[#results + 1] = 'should_not_reach'
       end)
 
-      run(function()
-        Async.sleep(1)
-        task:close()
-      end):wait()
+      task:close()
 
       check_task_err(task, 'closed')
 
