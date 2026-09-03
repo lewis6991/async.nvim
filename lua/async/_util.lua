@@ -9,7 +9,7 @@ end
 --- like unpack() but use the length set by F.pack_len if present
 --- @param t? { [integer]: any, n?: integer }
 --- @param first? integer
---- @return any...
+--- @return ...
 function M.unpack_len(t, first)
   if t then
     return unpack(t, first or 1, t.n or table.maxn(t))

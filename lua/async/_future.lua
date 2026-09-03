@@ -55,7 +55,11 @@ end
 function Future:on_complete(callback)
   if self:completed() then
     -- Already completed or closed
-    callback(self._err, util.unpack_len(self._result))
+    if self._err ~= nil then
+      callback(self._err)
+    else
+      callback(nil, util.unpack_len(self._result))
+    end
     return function() end
   end
 

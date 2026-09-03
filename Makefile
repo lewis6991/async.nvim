@@ -100,10 +100,17 @@ doc:
 		lua
 	./docgen.lua doc.json doc/lua-async.txt
 
-VENDOR_NVIM_MODULES = _util _errors _runtime _future _core _event _queue _semaphore
+VENDOR_NVIM_MODULES = _runtime _future _core _event _queue _semaphore
 VENDOR_NVIM_MODULE_OUTPUTS = $(addprefix build/nvim/vim/async/,$(addsuffix .lua,$(VENDOR_NVIM_MODULES)))
 VENDOR_NVIM_OUTPUTS = build/nvim/vim/async.lua $(VENDOR_NVIM_MODULE_OUTPUTS) build/nvim/async_spec.lua
-VENDOR_NVIM_INPUTS = scripts/vendor_nvim.lua lua/*.lua lua/async/*.lua test/async_spec.lua
+VENDOR_NVIM_INPUTS = scripts/vendor_nvim.lua lua/*.lua lua/async/*.lua test/async_spec.lua meta/*.lua
+
+NVIM_SOURCE_DIR ?=
+NVIM_ASYNC_DIR = $(NVIM_SOURCE_DIR)/runtime/lua/vim/async
+NVIM_ASYNC_OUTPUTS = $(NVIM_SOURCE_DIR)/runtime/lua/vim/async.lua \
+	$(addprefix $(NVIM_ASYNC_DIR)/,$(addsuffix .lua,$(VENDOR_NVIM_MODULES)))
+NVIM_ASYNC_TEST = $(NVIM_SOURCE_DIR)/test/functional/lua/async_spec.lua
+NVIM_CORE_UTIL = $(NVIM_SOURCE_DIR)/runtime/lua/vim/_core/util.lua
 
 .PHONY: vendor-nvim
 vendor-nvim: $(VENDOR_NVIM_OUTPUTS)
@@ -114,3 +121,14 @@ $(VENDOR_NVIM_OUTPUTS) &: $(VENDOR_NVIM_INPUTS) stylua $(EMMYLUA_BIN)
 	./stylua $(VENDOR_NVIM_OUTPUTS)
 	$(EMMYLUA_BIN) build/nvim/vim \
 		--config .emmyrc.vendor.json
+
+.PHONY: sync-nvim
+sync-nvim: vendor-nvim
+	test -n "$(NVIM_SOURCE_DIR)"
+	test -f "$(NVIM_CORE_UTIL)"
+	nvim -l scripts/vendor_nvim.lua \
+		$(NVIM_SOURCE_DIR)/runtime/lua/vim/async.lua \
+		$(NVIM_ASYNC_TEST) \
+		$(NVIM_CORE_UTIL)
+	./stylua $(NVIM_ASYNC_OUTPUTS) $(NVIM_ASYNC_TEST)
+	$(MAKE) -C "$(NVIM_SOURCE_DIR)" doc

@@ -305,7 +305,15 @@ do --- Task
     return msg
   end
 
-  --- If a task completes with an error, raise the error
+  --- Raise this task's error when it completes.
+  ---
+  --- Use this for detached or top-level fire-and-forget tasks whose completion
+  --- will not otherwise be observed. Attached task errors already propagate to
+  --- their parent.
+  ---
+  --- Detached tasks do not raise errors automatically. Detaching changes
+  --- ownership only; their completion can still be handled with
+  --- [vim.async.await()], [Task:wait()], [Task:pwait()], or [Task:on_complete()].
   --- @return vim.async.Task<R> self
   function Task:raise_on_error()
     self:on_complete(function(err)

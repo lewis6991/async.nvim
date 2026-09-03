@@ -13,9 +13,15 @@
 
 ---@class vim
 ---@field _maxint integer
+---@field F vim.F
 ---@field fn vim.fn
 ---@field uv vim.uv
 vim = {}
+
+---@class vim.F
+---@field pack_len fun(...: any): {n: integer, [integer]: any}
+---@field unpack_len fun(t: {n: integer, [integer]: any}): ...
+vim.F = {}
 
 ---@param timeout integer
 ---@param predicate fun(): boolean

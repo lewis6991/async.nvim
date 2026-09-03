@@ -1,5 +1,10 @@
 local new_event = require('async._event')
 
+--- An optionally bounded FIFO queue for passing values between async tasks.
+---
+--- `put()` suspends the current task while the queue is full, and `get()`
+--- suspends it while the queue is empty. The `put_nowait()` and `get_nowait()`
+--- variants never suspend and raise an error when the operation cannot proceed.
 --- @class vim.async.Queue<R>
 --- @field private _non_empty vim.async.Event
 --- @field package _non_full vim.async.Event

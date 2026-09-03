@@ -12,10 +12,12 @@ local exec_lua = helpers.exec_lua
 -- - cyclic chain with detached tasks
 
 --- @param s string
---- @param f fun()
-local function it_exec(s, f)
+--- @param f fun(...)
+--- @param ... any
+local function it_exec(s, f, ...)
+  local args = { ... }
   it(s, function()
-    exec_lua(f)
+    exec_lua(f, unpack(args))
   end)
 end
 
@@ -1172,17 +1174,38 @@ stack traceback:
     end)
 
     it_exec('should not fail the parent task if children finish before parent', function()
-      local child1 --- @type vim.async.Task
-      local child2 --- @type vim.async.Task
+      local release_parent --- @type fun()?
+      local release_child1 --- @type fun()?
+      local release_child2 --- @type fun()?
+      local child1, child2 --- @type vim.async.Task, vim.async.Task
+
       local main = run(function()
-        child1 = run(Async.sleep, 5)
-        child2 = run(Async.sleep, 5)
-        Async.sleep(20)
+        child1 = run(function()
+          await(function(callback)
+            release_child1 = callback
+          end)
+        end)
+        child2 = run(function()
+          await(function(callback)
+            release_child2 = callback
+          end)
+        end)
+
+        await(function(callback)
+          release_parent = callback
+        end)
       end)
 
+      assert(release_child1)
+      assert(release_child2)
+      assert(release_parent)
+      release_child1()
+      release_child2()
+      assert(child1:completed())
+      assert(child2:completed())
+
+      release_parent()
       main:wait()
-      child1:wait()
-      child2:wait()
     end)
 
     it_exec('automatically closes suspended child tasks', function()
@@ -1583,7 +1606,30 @@ stack traceback:
   end)
 
   describe('inspect_tree', function()
-    it_exec('outside of tasks', function()
+    local outside_tree = helpers.dedent([=[
+      parent %[awaiting%]
+      ├─ child1 %[awaiting%]
+      ├─ child2 %[awaiting%]
+      └─ child3 %[awaiting%]
+         ├─ sub_child1 %[awaiting%]
+         ├─ sub_child2 %[awaiting%]
+         └─ %[awaiting%]]=])
+    local inside_tree = helpers.dedent([=[
+      parent %[awaiting%]
+      ├─ child1 %[awaiting%]
+      ├─ child2 %[awaiting%]
+      └─ child3 %[running%]
+         ├─ sub_child1 %[awaiting%]
+         ├─ sub_child2 %[awaiting%]
+         └─ %[awaiting%]]=])
+    local jit_tree = helpers.dedent([=[
+      parent@test/async_spec.lua:%d+ %[awaiting%]
+      └─ child@test/async_spec.lua:%d+ %[awaiting%]]=])
+    local puc_tree = helpers.dedent([=[
+      parent=.* %[awaiting%]
+      └─ child=.* %[awaiting%]]=])
+
+    it_exec('outside of tasks', function(expected)
       local parent = run('parent', function()
         run('child1', eternity)
         run('child2', eternity)
@@ -1594,23 +1640,13 @@ stack traceback:
         end)
       end)
 
-      eq(
-        p([=[
-parent %[awaiting%]
-├─ child1 %[awaiting%]
-├─ child2 %[awaiting%]
-└─ child3 %[awaiting%]
-   ├─ sub_child1 %[awaiting%]
-   ├─ sub_child2 %[awaiting%]
-   └─ %[awaiting%]]=]),
-        Async._inspect_tree()
-      )
+      eq(p(expected), Async._inspect_tree())
 
       parent:close()
       check_task_err(parent, 'closed')
-    end)
+    end, outside_tree)
 
-    it_exec('inside a task', function()
+    it_exec('inside a task', function(expected)
       local inspect
       local parent = run('parent', function()
         run('child1', eternity)
@@ -1623,23 +1659,13 @@ parent %[awaiting%]
         end)
       end)
 
-      eq(
-        p([=[
-parent %[awaiting%]
-├─ child1 %[awaiting%]
-├─ child2 %[awaiting%]
-└─ child3 %[running%]
-   ├─ sub_child1 %[awaiting%]
-   ├─ sub_child2 %[awaiting%]
-   └─ %[awaiting%]]=]),
-        inspect
-      )
+      eq(p(expected), inspect)
 
       parent:close()
       check_task_err(parent, 'closed')
-    end)
+    end, inside_tree)
 
-    it_exec('can show task creation locations in debug mode', function()
+    it_exec('can show task creation locations in debug mode', function(jit_expected, puc_expected)
       Async.config({ debug = true })
       local parent
       local ok, err = pcall(function()
@@ -1647,13 +1673,7 @@ parent %[awaiting%]
           run('child', eternity)
         end)
 
-        local expected = is_jit()
-            and [=[
-parent@test/async_spec.lua:%d+ %[awaiting%]
-└─ child@test/async_spec.lua:%d+ %[awaiting%]]=]
-          or [=[
-parent=.* %[awaiting%]
-└─ child=.* %[awaiting%]]=]
+        local expected = is_jit() and jit_expected or puc_expected
 
         eq(p(expected), Async._inspect_tree())
       end)
@@ -1667,7 +1687,7 @@ parent=.* %[awaiting%]
       if not ok then
         error(err, 0)
       end
-    end)
+    end, jit_tree, puc_tree)
   end)
 
   describe('pcall and task-control errors', function()
@@ -1963,10 +1983,7 @@ parent=.* %[awaiting%]
         results[#results + 1] = 'cleanup'
       end)
 
-      run(function()
-        Async.sleep(1)
-        parent:close()
-      end):wait()
+      parent:close()
 
       check_task_err(parent, 'closed')
       eq({
@@ -2067,10 +2084,7 @@ parent=.* %[awaiting%]
         results[#results + 1] = 'after_checkpoint'
       end)
 
-      run(function()
-        Async.sleep(1)
-        task:close()
-      end):wait()
+      task:close()
 
       check_task_err(task, 'closed')
 
@@ -2150,10 +2164,7 @@ parent=.* %[awaiting%]
         end
       end)
 
-      run(function()
-        Async.sleep(1)
-        task:close()
-      end):wait()
+      task:close()
 
       check_task_err(task, 'closed')
 
@@ -2200,28 +2211,39 @@ parent=.* %[awaiting%]
 
     it_exec('first child error remains pending across subsequent awaits', function()
       local results = {}
+      local release_first --- @type fun()?
+
+      -- Child failure, rather than this awaitable, resumes the parent.
+      local function wait_for_child_error()
+        await(function() end)
+      end
+
       local parent = run(function()
         local _child1 = run(function()
-          Async.sleep(5)
+          await(function(callback)
+            release_first = callback
+          end)
           error('ERROR_1')
         end)
 
+        local release_second --- @type fun()?
         local _child2 = run(function()
-          Async.sleep(10)
+          await(function(callback)
+            release_second = callback
+          end)
           error('ERROR_2')
         end)
 
-        local ok1, err1 = pcall(function()
-          Async.sleep(100)
-        end)
+        local ok1, err1 = pcall(wait_for_child_error)
 
         if not ok1 then
           results[#results + 1] = err1:match('ERROR_1') and 'got_error_1' or 'other'
         end
 
-        local ok2, err2 = pcall(function()
-          Async.sleep(100)
-        end)
+        assert(release_second)
+        release_second()
+
+        local ok2, err2 = pcall(wait_for_child_error)
 
         if not ok2 then
           results[#results + 1] = err2:match('ERROR_1') and 'got_error_1_again' or 'other'
@@ -2229,6 +2251,9 @@ parent=.* %[awaiting%]
 
         results[#results + 1] = 'returned'
       end)
+
+      assert(release_first)
+      release_first()
 
       local ok, err = parent:pwait(200)
       eq(false, ok)
@@ -2254,10 +2279,7 @@ parent=.* %[awaiting%]
         error('TASK_ERROR')
       end)
 
-      run(function()
-        Async.sleep(1)
-        task:close()
-      end):wait()
+      task:close()
 
       local ok, err = task:pwait(100)
       assert(not ok, 'Expected task to error')

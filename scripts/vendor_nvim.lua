@@ -124,10 +124,6 @@ end
 
 --- @param source string
 --- @return string
-local function hide_module_functions(source)
-  return strip_doc_comments(source):gsub('function M%.', '--- @nodoc\nfunction M.')
-end
-
 local coxpcall_pcall = table.concat({
   'local pcall = pcall',
   'do',
@@ -193,6 +189,21 @@ end
 --- @param source string
 --- @return string
 local function transform_core(source)
+  source = replace_once_plain(
+    source,
+    "local util = require('async._util')\n",
+    "local util = require('vim._core.util')\n"
+  )
+  source = replace_once_plain(source, "local errors = require('async._errors')\n", '')
+  source = replace_required_plain(source, 'errors.normalize(', 'util._normalize_error(')
+  source = replace_required_plain(source, 'errors.stringify(', 'util._stringify_error(')
+  source = replace_once_plain(
+    source,
+    'local pack_len = util.pack_len\nlocal unpack_len = util.unpack_len\n',
+    'local pack_len = vim.F.pack_len\nlocal unpack_len = vim.F.unpack_len\n'
+  )
+  source =
+    replace_required_plain(source, 'return unpack_len(res, 2)', 'return unpack(res, 2, res.n)')
   source = replace_once_plain(source, "local compat = require('async._compat')\n", '')
   source = replace_once_plain(
     source,
@@ -207,6 +218,21 @@ local function transform_core(source)
   )
   source = replace_required_plain(source, 'compat.running()', 'coroutine_running()')
   source = replace_required_plain(source, 'compat._maxint', 'maxint')
+  source = replace_once_plain(
+    source,
+    '        awaiting = yielded\n',
+    '        --- @diagnostic disable-next-line: cast-local-type\n        awaiting = yielded\n'
+  )
+  source = replace_once_plain(
+    source,
+    '      task._awaiting = awaiting\n',
+    '      --- @diagnostic disable-next-line: assign-type-mismatch\n      task._awaiting = awaiting\n'
+  )
+  source = replace_once_plain(
+    source,
+    '          task._awaiting_unsubscribe = unsubscribe\n',
+    '          --- @diagnostic disable-next-line: assign-type-mismatch\n          task._awaiting_unsubscribe = unsubscribe\n'
+  )
   source = replace_once_plain(source, '--- Core task scheduler implementation.\n', '')
   return replace_once_plain(
     source,
@@ -218,6 +244,7 @@ end
 --- @param source string
 --- @return string
 local function transform_public_module(source)
+  source = replace_once_plain(source, "local util = require('async._util')\n", 'local F = vim.F\n')
   source = replace_once_plain(
     source,
     "local compat = require('async._compat')\n",
@@ -230,12 +257,63 @@ local function transform_public_module(source)
     '--- Create an async function from a callback-style function.\n',
     '--- Create an async function from a callback-style function.\n'
   )
-  return replace_once_plain(source, '  M.config({\n', '  runtime.config({\n')
+  source = replace_once_plain(source, '  M.config({\n', '  runtime.config({\n')
+  source = replace_required_plain(source, 'util.pack_len(', 'F.pack_len(')
+  source = replace_required_plain(
+    source,
+    'return util.unpack_len(result, 2)',
+    'return unpack(result, 2, result.n)'
+  )
+  return replace_once_plain(
+    source,
+    table.concat({
+      '  --- @async',
+      '  local function next_task()',
+      '    return queue:get()',
+      '  end',
+      '',
+      '  return util.gc_fun(next_task, function()',
+      '    unsubscribe_all(unsubscribe)',
+      '  end)',
+    }, '\n'),
+    table.concat({
+      '  local proxy = newproxy(true)',
+      '  getmetatable(proxy).__gc = function()',
+      '    unsubscribe_all(unsubscribe)',
+      '  end',
+      '',
+      '  --- @async',
+      '  return function()',
+      '    local _ = proxy -- Keep the GC proxy alive with the iterator.',
+      '    return queue:get()',
+      '  end',
+    }, '\n')
+  )
+end
+
+--- @param source string
+--- @return string
+local function transform_future(source)
+  source = replace_once_plain(
+    source,
+    "local util = require('async._util')\n",
+    "local F = vim.F\nlocal util = require('vim._core.util')\n"
+  )
+  source = replace_once_plain(source, "local errors = require('async._errors')\n", '')
+  source = replace_required_plain(source, 'errors.normalize(', 'util._normalize_error(')
+  source = replace_required_plain(source, 'errors.stringify(', 'util._stringify_error(')
+  source = replace_required_plain(source, 'util.pack_len(', 'F.pack_len(')
+  source = replace_required_plain(source, 'util.unpack_len(', 'F.unpack_len(')
+  return strip_doc_comments(source)
 end
 
 --- @param source string
 --- @return string
 local function transform_semaphore(source)
+  source = replace_once_plain(source, "local util = require('async._util')\n", 'local F = vim.F\n')
+  source = replace_required_plain(source, 'util.pack_len(', 'F.pack_len(')
+  source =
+    replace_required_plain(source, 'return util.unpack_len(r, 2)', 'return unpack(r, 2, r.n)')
   source = replace_once_plain(source, "local compat = require('async._compat')\n", '')
   source = replace_once_plain(
     source,
@@ -246,24 +324,78 @@ local function transform_semaphore(source)
 end
 
 local modules = {
-  { 'async/_util.lua', 'lua/async/_util.lua', hide_module_functions },
-  { 'async/_errors.lua', 'lua/async/_errors.lua', hide_module_functions },
   { 'async/_runtime.lua', 'lua/async/_runtime.lua', transform_runtime },
-  { 'async/_future.lua', 'lua/async/_future.lua', strip_doc_comments },
+  { 'async/_future.lua', 'lua/async/_future.lua', transform_future },
   { 'async/_core.lua', 'lua/async/_core.lua', transform_core },
-  { 'async/_event.lua', 'lua/async/_event.lua', strip_doc_comments },
-  { 'async/_queue.lua', 'lua/async/_queue.lua', strip_doc_comments },
+  { 'async/_event.lua', 'lua/async/_event.lua' },
+  { 'async/_queue.lua', 'lua/async/_queue.lua' },
   { 'async/_semaphore.lua', 'lua/async/_semaphore.lua', transform_semaphore },
 }
 
---- @param output_path string
-local function write_module_files(output_path)
-  write_file(output_path, render_source('lua/async.lua', transform_public_module))
+local core_util_start = '-- Generated from async.nvim/lua/async/_errors.lua: start'
+local core_util_end = '-- Generated from async.nvim/lua/async/_errors.lua: end'
 
-  local output_dir = assert(output_path:match('^(.*)/[^/]+$'))
-  vim.fn.delete(vim.fs.joinpath(output_dir, 'async'), 'rf')
+--- @return string
+local function render_core_util_helpers()
+  local source = read_file('lua/async/_errors.lua')
+  source = replace_once_plain(source, 'local M = {}\n\n', '')
+  source = replace_once_plain(source, '\nreturn M\n', '')
+  source = replace_required_plain(source, 'M.normalize', 'M._normalize_error')
+  source = replace_required_plain(source, 'M.stringify', 'M._stringify_error')
+  source = replace_once_plain(
+    source,
+    'function M._normalize_error(err)',
+    '--- @private\nfunction M._normalize_error(err)'
+  )
+  source = replace_once_plain(
+    source,
+    'function M._stringify_error(err)',
+    '--- @private\nfunction M._stringify_error(err)'
+  )
+  return source
+end
+
+--- @param path string
+--- @return string
+local function render_core_util(path)
+  local source = read_file(path)
+  local helpers = render_core_util_helpers()
+  local generated = core_util_start .. '\n' .. helpers .. core_util_end .. '\n'
+
+  if source:find(core_util_start, 1, true) then
+    source = strip_block(source, core_util_start, core_util_end .. '\n', generated)
+  elseif source:find(helpers, 1, true) then
+    source = replace_once_plain(source, helpers, generated)
+  else
+    assert(
+      not source:find('normalize_error', 1, true) and not source:find('stringify_error', 1, true),
+      'unmanaged error helpers'
+    )
+    source = replace_once_plain(source, 'local M = {}\n', 'local M = {}\n\n' .. generated)
+  end
+
+  return source
+end
+
+--- @return string
+--- @return {[1]: string, [2]: string}[]
+local function render_module_files()
+  local rendered = {}
   for _, module in ipairs(modules) do
-    write_file(vim.fs.joinpath(output_dir, module[1]), render_source(module[2], module[3], true))
+    rendered[#rendered + 1] = { module[1], render_source(module[2], module[3], true) }
+  end
+  return render_source('lua/async.lua', transform_public_module), rendered
+end
+
+--- @param output_path string
+--- @param public_source string
+--- @param module_files {[1]: string, [2]: string}[]
+local function write_module_files(output_path, public_source, module_files)
+  local output_dir = assert(output_path:match('^(.*)/[^/]+$'))
+  write_file(output_path, public_source)
+  vim.fn.delete(vim.fs.joinpath(output_dir, 'async'), 'rf')
+  for _, module in ipairs(module_files) do
+    write_file(vim.fs.joinpath(output_dir, module[1]), module[2])
   end
 end
 
@@ -313,6 +445,7 @@ local function transform_test()
 
   output = replace_required_plain(output, 'test/async_spec.lua:%d+', '.*async_spec.lua:%d+')
   output = replace_required_plain(output, 'Async.config(', 'AsyncRuntime.config(')
+  output = replace_required_plain(output, 'helpers.dedent(', 't.dedent(')
   output = output:gsub("require%('async%.", "require('vim.async.")
   output = output:gsub('require%("async%.', 'require("vim.async.')
   output = normalize_luals_diagnostics(output)
@@ -322,12 +455,20 @@ end
 
 --- @param output_path string?
 --- @param test_output_path string?
-local function run(output_path, test_output_path)
+--- @param core_util_path string?
+local function run(output_path, test_output_path, core_util_path)
   assert(output_path, 'output path argument is required')
-  write_module_files(output_path)
+  local public_source, module_files = render_module_files()
+  local test_source = test_output_path and transform_test()
+  local core_util_source = core_util_path and render_core_util(core_util_path)
+
+  write_module_files(output_path, public_source, module_files)
   if test_output_path then
-    write_file(test_output_path, transform_test())
+    write_file(test_output_path, assert(test_source))
+  end
+  if core_util_path then
+    write_file(core_util_path, assert(core_util_source))
   end
 end
 
-run(arg[1], arg[2])
+run(arg[1], arg[2], arg[3])

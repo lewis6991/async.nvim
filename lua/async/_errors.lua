@@ -2,16 +2,14 @@ local M = {}
 
 local nil_error = 'error(nil)'
 
---- Normalize a failed Lua operation for async error slots, where `nil`
---- already means success.
+--- Normalize a failed Lua operation for error slots where `nil` means success.
 --- @param err any
 --- @return any
 function M.normalize(err)
   return err == nil and nil_error or err
 end
 
---- Convert an error value to a string without letting its metamethod interrupt
---- task finalization.
+--- Convert an error to a string without letting its metamethod interrupt cleanup.
 --- @param err any
 --- @return string
 function M.stringify(err)
