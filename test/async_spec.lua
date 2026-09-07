@@ -1690,6 +1690,234 @@ stack traceback:
     end, jit_tree, puc_tree)
   end)
 
+  describe('protected tasks', function()
+    it_exec('preserves arguments and results including trailing nils', function()
+      local task = Async.prun(function(...)
+        eq({ n = 4, 'value', nil, false }, vim.F.pack_len(...))
+        await(vim.schedule)
+        return ...
+      end, 'value', nil, false, nil)
+
+      eq({ n = 5, true, 'value', nil, false }, vim.F.pack_len(task:wait(100)))
+      eq({ true }, { Async.prun(function() end):wait(100) })
+    end)
+
+    it_exec('captures error values without treating them as cancellation', function()
+      for _, err in ipairs({ false, {}, 'closed' }) do
+        local task = Async.prun(function()
+          await(vim.schedule)
+          error(err, 0)
+        end)
+        local ok, result = task:wait(100)
+        eq(false, ok)
+        eq(true, result == err)
+      end
+
+      eq({ false, 'error(nil)' }, { Async.prun(function()
+        error()
+      end):wait(100) })
+    end)
+
+    it_exec('keeps concurrent failures recoverable through iter', function()
+      local fail_cache, finish_disk
+      local results = {}
+      local parent = run(function()
+        local cache = Async.prun(function()
+          await(function(callback)
+            fail_cache = callback
+          end)
+          error('CACHE_ERROR', 0)
+        end)
+        local disk = Async.prun(function()
+          return await(function(callback)
+            finish_disk = callback
+          end)
+        end)
+
+        local next_task = Async.iter({ cache, disk })
+        results[1] = { await(next_task()) }
+        eq(false, disk:completed())
+        finish_disk('disk contents')
+        results[2] = { await(next_task()) }
+        eq(nil, next_task())
+      end)
+
+      fail_cache()
+      parent:wait(100)
+      eq({ { false, 'CACHE_ERROR' }, { true, 'disk contents' } }, results)
+    end)
+
+    it_exec('joins failed protected work without failing its parent', function()
+      for _, return_from_body in ipairs({ false, true }) do
+        local fail_child, finish_cleanup
+        local task, sibling
+        local parent = run(function()
+          task = Async.prun(function()
+            run(function()
+              await(function(callback)
+                fail_child = callback
+              end)
+              error('CHILD_ERROR', 0)
+            end)
+            sibling = run(function()
+              await(function()
+                return {
+                  close = function(_, callback)
+                    finish_cleanup = callback
+                  end,
+                }
+              end)
+            end)
+            if not return_from_body then
+              -- Catching delivery cannot turn a failed scope into success.
+              pcall(await, function() end)
+            end
+            return 'body returned'
+          end)
+          return 'parent returned'
+        end)
+
+        eq(false, parent:completed())
+        fail_child()
+        eq(false, parent:completed())
+        eq(false, task:completed())
+        eq(false, sibling:completed())
+        finish_cleanup()
+        eq('parent returned', parent:wait(100))
+        eq({ false, 'child error: CHILD_ERROR' }, { task:wait(100) })
+        check_task_err(sibling, 'closed')
+      end
+    end)
+
+    it_exec('preserves cancellation while waiting for cleanup', function()
+      local finish_cleanup
+      local task = Async.prun(function()
+        pcall(await, function()
+          return {
+            close = function(_, callback)
+              finish_cleanup = callback
+            end,
+          }
+        end)
+        error('CLEANUP_ERROR', 0)
+      end)
+      task:close()
+      eq(false, task:completed())
+      finish_cleanup()
+      check_task_err(task, 'closed')
+    end)
+
+    it_exec('closes owned work when its parent is cancelled', function()
+      local finish_cleanup
+      local child
+      local parent = run(function()
+        child = Async.prun(function()
+          run(function()
+            await(function()
+              return {
+                close = function(_, callback)
+                  finish_cleanup = callback
+                end,
+              }
+            end)
+          end)
+          -- Cancellation arrives during the implicit child join.
+        end)
+        await(function() end)
+      end)
+
+      parent:close()
+      eq(false, parent:completed())
+      eq(false, child:completed())
+      finish_cleanup()
+      check_task_err(parent, 'closed')
+      check_task_err(child, 'closed')
+    end)
+
+    it_exec('does not start protected work closed before a checkpoint', function()
+      local started = false
+      local child
+      run(function()
+        child = Async.prun(function()
+          started = true
+        end)
+        child:close()
+      end):wait(100)
+      eq(false, started)
+      check_task_err(child, 'closed')
+    end)
+
+    it_exec('preserves nested protected results', function()
+      local task = Async.prun(function()
+        return await(Async.prun(function()
+          error('INNER_ERROR', 0)
+        end))
+      end)
+      eq({ true, false, 'INNER_ERROR' }, { task:wait(100) })
+    end)
+
+    it_exec('validates arguments when creating the task', function()
+      local ok, err = pcall(Async.prun, false)
+      eq(false, ok)
+      eq(p('Invalid arguments'), err)
+
+      ok, err = pcall(Async.prun, 'named', false)
+      eq(false, ok)
+      eq(p('func: expected callable, got boolean'), err)
+    end)
+
+    it_exec('protects callable tables', function()
+      local callable = setmetatable({}, {
+        __call = function(_, fail, value)
+          await(vim.schedule)
+          if fail then
+            error(value, 0)
+          end
+          return value
+        end,
+      })
+
+      local task = Async.prun('named', callable, false, 'result')
+      eq('named', task.name)
+      eq({ true, 'result' }, { task:wait(100) })
+      eq({ false, 'ERROR' }, { Async.prun(callable, true, 'ERROR'):wait(100) })
+    end)
+
+    it_exec('captures errors if a table stops being callable before it starts', function()
+      local callable = setmetatable({}, {
+        __call = function()
+          error('must not run')
+        end,
+      })
+      local parent = run(function()
+        local task = Async.prun(callable)
+        setmetatable(callable, {})
+        return await(task)
+      end)
+
+      local ok, err = parent:wait(100)
+      eq(false, ok)
+      eq(p('attempt to call'), err)
+    end)
+
+    it_exec('does not protect unrelated failures in the parent', function()
+      local fail_sibling
+      local parent = run(function()
+        run(function()
+          await(function(callback)
+            fail_sibling = callback
+          end)
+          error('SIBLING_ERROR', 0)
+        end)
+        await(Async.prun(eternity))
+        error('await should not return')
+      end)
+
+      fail_sibling()
+      check_task_err(parent, 'child error: SIBLING_ERROR')
+    end)
+  end)
+
   describe('pcall and task-control errors', function()
     it_exec('child errors remain terminal after pcall catches delivery', function()
       local results = {}

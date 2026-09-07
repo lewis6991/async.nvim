@@ -12,8 +12,8 @@ local util = require('async._util')
 ---
 --- Start async work with [vim.async.run()]. Inside a task, use
 --- [vim.async.await()] to wait for callback-style APIs or other tasks without
---- blocking the event loop. Use [vim.async.pawait()] when an awaited operation
---- can fail and the current task should continue.
+--- blocking the event loop. Use [vim.async.prun()] to create tasks whose
+--- failures can be handled without failing their parent.
 ---
 --- Examples in this help use `local async = vim.async` for brevity.
 ---
@@ -90,10 +90,10 @@ local util = require('async._util')
 --- Use [vim.async.await()] inside a task to suspend until work completes. It
 --- accepts a task, a callback-taking function, or an argument position plus a
 --- callback-taking function. `await(task)` returns the task result or raises
---- the task failure. [vim.async.pawait()] is the async counterpart to `pcall()`
---- for recoverable awaited-operation failures; it returns `ok, ...` instead of
---- failing the current task for that awaited operation. It does not suppress
---- cancellation or a failure already pending on the current task.
+--- the task failure. [vim.async.pawait()] returns `ok, ...` for an awaited
+--- operation. Use [vim.async.prun()] to establish a recoverable child scope
+--- before work starts. Neither suppresses cancellation or a failure already
+--- pending on the current task.
 ---
 --- From synchronous code, use [Task:wait()] or [Task:pwait()] to pump the event
 --- loop until the task completes. Use [Task:on_complete()] to observe
@@ -172,17 +172,22 @@ end
 --- tasks are observed in the order they complete, regardless of the order in
 --- the input list.
 ---
+--- Iterating does not protect attached child failures: a child can fail the
+--- parent while the iterator waits, before the loop calls `pawait(task)`.
+--- The example uses [vim.async.prun()] to handle reader failures
+--- independently while retaining parent ownership.
+---
 --- ```lua
 --- local async = vim.async
 ---
 --- async.run(function()
 ---   local tasks = {
----     async.run(function() return 'cache', read_cache() end):detach(),
----     async.run(function() return 'disk', read_file() end):detach(),
+---     async.prun(function() return 'cache', read_cache() end),
+---     async.prun(function() return 'disk', read_file() end),
 ---   }
 ---
 ---   for task in async.iter(tasks) do
----     local ok, source, text = async.pawait(task)
+---     local ok, source, text = async.await(task)
 ---     if ok then
 ---       for _, other in ipairs(tasks) do
 ---         if other ~= task then
