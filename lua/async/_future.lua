@@ -1,5 +1,6 @@
 local util = require('async._util')
 local errors = require('async._errors')
+local runtime = require('async._runtime')
 
 --- Future objects are used to bridge low-level callback-based code with
 --- high-level async/await code.
@@ -42,6 +43,26 @@ function Future:result()
   end
 end
 
+--- Invoke an observer without letting its error escape through completion.
+--- @private
+--- @param callback fun(err?: any, ...: any)
+function Future:_invoke(callback)
+  local ok, traceback = xpcall(function()
+    if self._err ~= nil then
+      callback(self._err)
+    else
+      callback(nil, util.unpack_len(self._result))
+    end
+  end, function(err)
+    return debug.traceback(errors.stringify(errors.normalize(err)), 2)
+  end)
+  if not ok then
+    runtime.schedule(function()
+      error(traceback, 0)
+    end)
+  end
+end
+
 --- Add a callback to be run when the Future is done.
 ---
 --- The callback is called with the arguments:
@@ -50,16 +71,14 @@ end
 ---
 --- If the Future is already done when this method is called, the callback is
 --- called immediately with the results.
+--- Callback errors are reported through the runtime scheduler with their
+--- traceback. Other observers still run and the Future's result is unchanged.
 --- @param callback fun(err?: any, ...: any)
 --- @return fun() unsubscribe
 function Future:on_complete(callback)
   if self:completed() then
     -- Already completed or closed
-    if self._err ~= nil then
-      callback(self._err)
-    else
-      callback(nil, util.unpack_len(self._result))
-    end
+    self:_invoke(callback)
     return function() end
   end
 
@@ -96,17 +115,9 @@ function Future:complete(err, ...)
   local callbacks = self._callbacks
   self._callbacks = {}
 
-  local errs = {} --- @type string[]
   -- Need to use pairs to avoid gaps caused by removed callbacks
   for _, cb in pairs(callbacks) do
-    local ok, cb_err = pcall(cb, err, ...)
-    if not ok then
-      errs[#errs + 1] = errors.stringify(errors.normalize(cb_err))
-    end
-  end
-
-  if #errs > 0 then
-    error(table.concat(errs, '\n'), 0)
+    self:_invoke(cb)
   end
 end
 

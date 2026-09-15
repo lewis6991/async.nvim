@@ -154,6 +154,11 @@ do --- Task
   --- If the Task is already done when this method is called, the callback is
   --- called immediately with the results.
   ---
+  --- Callback errors are reported through the runtime scheduler with their
+  --- traceback. They do not change the task result, interrupt other callbacks,
+  --- or propagate to the caller that completes the task or registers a callback.
+  --- Catch errors inside the callback to handle them locally.
+  ---
   --- This only observes completion. It does not start a pending task.
   --- @param callback fun(err?: any, ...: R...)
   --- @return fun() unsubscribe
@@ -310,6 +315,8 @@ do --- Task
   --- Use this for detached or top-level fire-and-forget tasks whose completion
   --- will not otherwise be observed. Attached task errors already propagate to
   --- their parent.
+  --- The error is reported through the runtime scheduler, as for errors in
+  --- [Task:on_complete()] callbacks.
   ---
   --- Detached tasks do not raise errors automatically. Detaching changes
   --- ownership only; their completion can still be handled with
@@ -374,9 +381,10 @@ do --- Task
   --- @package
   --- @param err any
   function Task:_raise(err)
-    if self:status() == 'running' then
-      -- A running coroutine cannot be resumed recursively, so deliver the
-      -- error on a later event-loop turn after the current stack unwinds.
+    local status = self:status()
+    if status == 'running' or status == 'normal' then
+      -- A running coroutine, or one beneath it (`normal`), cannot be resumed
+      -- recursively. Deliver the error after the current stack unwinds.
       runtime.schedule(function()
         if not self:completed() then
           self:_resume(err)

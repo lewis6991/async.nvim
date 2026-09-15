@@ -340,6 +340,21 @@ task should keep running.
 cancellation or already pending failure from the current task; those are task
 state and are still delivered at checkpoints.
 
+### Completion Callbacks
+
+`task:on_complete(callback)` observes the task's final result. The callback
+receives `nil, ...results` on success or the task's error on failure. It runs
+synchronously when the task completes, or immediately during registration if
+the task has already completed.
+
+Errors raised by completion callbacks are reported with their tracebacks on a
+later event-loop turn. They do not propagate to the caller, change the task's
+result, or prevent other completion callbacks from running.
+
+`task:raise_on_error()` uses this same reporting path for an unobserved task
+failure. Errors from the task body remain available through `await()`,
+`pawait()`, `wait()`, and `pwait()` as usual.
+
 ### Callback APIs
 
 `await(...)` can adapt callback APIs directly. The argument-position form inserts
@@ -444,7 +459,7 @@ local function load_config()
     return nil, err
   end
 
-  local ok, config = pcall(vim.json.decode, text)
+  local ok, config = pcall(parse_config, text)
   if not ok then
     return nil, config
   end
@@ -590,10 +605,7 @@ awaits it.
 
 ## Runtime Integration
 
-In Neovim, async.nvim is initialized automatically from `vim.wait`,
-`vim.schedule`, and `vim.uv.new_timer`.
-
-Outside Neovim, configure the event-loop hooks explicitly:
+async.nvim uses three hooks to integrate with an event loop:
 
 ```lua
 local async = require('async')
