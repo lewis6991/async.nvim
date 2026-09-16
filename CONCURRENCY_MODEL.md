@@ -333,8 +333,8 @@ local ok, value_or_err = async.pawait(task)
 ```
 
 On success it returns `true` followed by the awaited values. On failure it
-returns `false, err`. Use `pawait()` when awaited work may fail and the current
-task should keep running.
+returns `false, err`. See [Recovering from Failure](#recovering-from-failure)
+for the task ownership restrictions.
 
 `pawait()` only protects the awaited operation. It does not protect
 cancellation or already pending failure from the current task; those are task
@@ -429,12 +429,20 @@ form of `pcall(task.wait, task, timeout)`.
 
 ## Recovering from Failure
 
-Put recoverable async work in its own task and await that task with protected
-await (`pawait()`). The child task becomes the failure boundary.
+| Operation | Ordinary | Protected |
+| --- | --- | --- |
+| Call and wait | `fn(...)` | `async.await(async.prun(fn, ...))` |
+| Create a task | `async.run(fn, ...)` | `async.prun(fn, ...)` |
+| Await an operation | `async.await(...)` | `async.pawait(...)` |
+
+Use `async.prun(fn, ...)` to create a recoverable task. It follows the same
+scheduling and ownership rules as `run()`. Awaiting it returns `true, ...` or
+`false, err` after the task finishes, including child cleanup. The caller's own
+failure or cancellation still propagates.
 
 ```lua
 async.run(function()
-  local ok, result_or_err = async.pawait(async.run(function()
+  local ok, result_or_err = async.await(async.prun(function()
     local text = read_file("settings.json")
     return parse_config(text)
   end))
@@ -448,7 +456,29 @@ async.run(function()
 end)
 ```
 
-Its failure becomes `false, err` instead of failing the parent.
+For task handles, use `pawait()` immediately around `run()`, or to inspect tasks
+you do not own, such as detached tasks. Observing a task this way does not
+change error propagation to its owner.
+
+A later `pawait(child)` cannot recover a child failure that has already failed
+the parent. For example, with `pawait(a); pawait(b)`, a failure in child `b`
+while awaiting `a` still fails the parent.
+
+Create the tasks before awaiting them to run recoverable work concurrently:
+
+```lua
+async.run(function()
+  local notes = async.prun(read_file, "notes.txt")
+  local config = async.prun(read_file, "settings.json")
+
+  local notes_ok, text = async.await(notes)
+  local config_ok, settings = async.await(config)
+end)
+```
+
+These tasks remain attached, but operation failures are returned as data.
+Ignoring their results ignores those failures. Closing one of these tasks
+still reports `"closed"` after cleanup, even if cleanup fails.
 
 If failure is part of normal control flow, return it as data instead of raising:
 
@@ -531,20 +561,20 @@ ownership rules from earlier sections.
 ### Completion Order with iter()
 
 `iter(tasks)` waits for existing task handles and yields the handles in
-completion order. It does not return task values or raise task failures. Use
-`await(task)` or `pawait(task)` to get each completed task's result.
+completion order. Use `await(task)` or `pawait(task)` to get each completed
+task's result.
 
-For recoverable fan-out, use detached tasks so each yielded handle is the
-failure boundary.
+A child failure can fail the parent while the iterator waits. Use
+`prun()` to receive operation failures as results:
 
 ```lua
 async.run(function()
-  local cache = async.run(load_cached_file, "notes.txt"):detach()
-  local disk = async.run(read_file, "notes.txt"):detach()
+  local cache = async.prun(load_cached_file, "notes.txt")
+  local disk = async.prun(read_file, "notes.txt")
 
   local next_task = async.iter({ cache, disk })
   local winner = next_task()
-  local ok, result_or_err = async.pawait(winner)
+  local ok, result_or_err = async.await(winner)
 
   if winner == cache then
     disk:close()

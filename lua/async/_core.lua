@@ -76,6 +76,8 @@ end
 --- @field package _error? any
 --- @field package _finalizing_children boolean
 --- @field package _started boolean
+--- Convert the completed scope's outcome to pcall results.
+--- @field package _protected? boolean
 ---
 --- Reference to parent to handle attaching/detaching.
 --- @field package _parent? vim.async.Task<any>
@@ -459,6 +461,15 @@ do --- Task
         err = self._error
       end
       err = errors.normalize(err)
+      if self._protected then
+        if not self._closing then
+          self._future:complete(nil, false, err)
+          return
+        end
+        -- Closing a protected task remains cancellation even if its cleanup
+        -- fails.
+        err = 'closed'
+      end
       if parent then
         parent:_child_failed(self, err, parent._awaiting == self)
       end
@@ -483,6 +494,8 @@ do --- Task
       else
         if self._error ~= nil then
           self:_finish_error(parent, self._error)
+        elseif self._protected then
+          self._future:complete(nil, true, ...)
         else
           self._future:complete(nil, ...)
         end
@@ -801,13 +814,15 @@ do --- Task
 end
 
 --- @generic T, R
+--- @param protected boolean
 --- @param name? string
 --- @param func async fun(...: T...): R... Function to run in an async context
 --- @param ... T... Arguments to pass to the function
---- @return vim.async.Task<R...>
-local function run(name, func, ...)
+--- @return vim.async.Task<any>
+local function run(protected, name, func, ...)
   validate('func', func, 'callable')
   local task = Task._new(name, func, ...)
+  task._protected = protected or nil
   task:_attach(running())
   if runtime.debug then
     local info = debug.getinfo(2, 'Sl')
@@ -866,9 +881,44 @@ end
 --- @overload fun(name: string, func: async fun(...: T...), ...: T...): vim.async.Task<R...>
 function M.run(func, ...)
   if type(func) == 'string' then
-    return run(func, ...)
+    return run(false, func, ...)
   elseif is_callable(func) then
-    return run(nil, func, ...)
+    return run(false, nil, func, ...)
+  end
+  error('Invalid arguments')
+end
+
+--- Create a task whose failures are returned as values.
+---
+--- Accepts the same arguments and follows the same scheduling and ownership
+--- rules as [vim.async.run()]. Awaiting the task returns `true, ...` on success
+--- or `false, err` if its function or an unhandled child fails, after child
+--- cleanup. Failures remain terminal within the task and close its children.
+--- Ignoring the result ignores the captured failure.
+---
+--- Closing the task itself still raises `"closed"` from [vim.async.await()],
+--- even if cleanup fails. The caller's own failure or cancellation still
+--- propagates.
+---
+--- ```lua
+--- local async = vim.async
+--- async.run(function()
+---   local cache = async.prun(read_cache)
+---   local disk = async.prun(read_file, 'notes.txt')
+---   local cache_ok, cached = async.await(cache)
+---   local disk_ok, text = async.await(disk)
+--- end)
+--- ```
+--- @generic T
+--- @param func async fun(...: T...) Function to run in an async context
+--- @param ... T... Arguments to pass to the function
+--- @return vim.async.Task<any>
+--- @overload fun(name: string, func: async fun(...: T...), ...: T...): vim.async.Task<any>
+function M.prun(func, ...)
+  if type(func) == 'string' then
+    return run(true, func, ...)
+  elseif is_callable(func) then
+    return run(true, nil, func, ...)
   end
   error('Invalid arguments')
 end
@@ -988,13 +1038,16 @@ end
 
 --- Protected await.
 ---
---- Async counterpart to `pcall()`. Accepts the same forms as
---- [vim.async.await()], but returns a leading `ok` boolean for
---- awaited-operation failures.
+--- Accepts the same forms as [vim.async.await()], but returns `true, ...` on
+--- success or `false, err` for an awaited-operation failure. Cancellation or
+--- already pending failure from the current task still propagates.
 ---
---- Use this when the awaited task or operation is allowed to fail and the
---- current task should continue. Cancellation or already pending failure from
---- the current task is not protected.
+--- For tasks, the two main uses are:
+---
+--- - Inspect results from tasks you do not own, such as top-level or detached
+---   tasks. This does not change failure propagation to another owner.
+--- - Establish a recoverable child scope with `pawait(async.run(...))`. The
+---   protected await is installed before the child starts.
 ---
 --- ```lua
 --- local async = vim.async
@@ -1008,6 +1061,13 @@ end
 ---   show_buffer(text_or_err)
 --- end)
 --- ```
+---
+--- Warning: if an attached child fails while its parent is not directly
+--- awaiting it, the parent fails and closes its other children. A later
+--- `pawait(child)` cannot recover that failure. To handle a child's failure
+--- later, create it with [vim.async.prun()] and retrieve `ok, ...` with
+--- `async.await(task)`.
+---
 --- @async
 --- @generic T, R
 --- @param ... any see overloads

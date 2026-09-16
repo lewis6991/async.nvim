@@ -16,6 +16,7 @@ async.config()	lua-async.txt	/*async.config()*
 async.is_closing()	lua-async.txt	/*async.is_closing()*
 async.iter()	lua-async.txt	/*async.iter()*
 async.pawait()	lua-async.txt	/*async.pawait()*
+async.prun()	lua-async.txt	/*async.prun()*
 async.run()	lua-async.txt	/*async.run()*
 async.semaphore()	lua-async.txt	/*async.semaphore()*
 async.sleep()	lua-async.txt	/*async.sleep()*
