@@ -303,6 +303,39 @@ error is reported instead.
 
 If the task has not started yet, it is closed without running its function.
 
+### Task Lifetime and Abandoned Callbacks
+
+The scheduler keeps unfinished tasks alive while they wait for callbacks,
+attached children, or cleanup. It stops retaining each task when it completes.
+Saved task handles or callbacks can still keep a completed task alive.
+
+Keep a handle for each top-level task that may need to be stopped. Call `close()`
+when its work is no longer needed, then observe completion before treating its
+cleanup as finished. Closing a parent also closes its attached children.
+
+If Lua collects an await callback before it is called, the task fails with
+`"await callback was discarded"`. `pawait()` returns `false, err` and lets the
+task continue instead. An unhandled error follows the normal task and
+child-failure rules.
+
+The GC finalizer queues the failure through the runtime scheduler. Normal await
+cleanup runs before the error is delivered. If cleanup fails, its error is
+reported instead. The task and its captured resources stay alive during cleanup.
+
+```lua
+local holder = {}
+local task = async.run(function()
+  async.await(function(done) holder.cb = done end)
+end)
+holder.cb = nil -- Drop the callback without calling it.
+-- After GC and a scheduler turn, the await fails.
+```
+
+GC timing is unpredictable, and the scheduler must run to deliver the failure.
+A callback held in the task's own data or returned handle remains reachable.
+Such a wait can stay pending indefinitely. Use explicit `close()` or `timeout()`
+to request cancellation without relying on GC.
+
 ## Awaiting Work
 
 Awaiting is an observation boundary, not an ownership boundary. `await(...)`
