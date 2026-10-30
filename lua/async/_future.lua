@@ -4,7 +4,7 @@ local runtime = require('async._runtime')
 
 --- Future objects are used to bridge low-level callback-based code with
 --- high-level async/await code.
---- @class vim.async.Future<R>
+--- @class (internal) vim.async.Future<R>
 --- @field private _callbacks table<integer, fun(err?: any, ...: R...)>
 --- @field private _callback_pos integer
 --- Error result of the task is an error occurs.
@@ -13,7 +13,7 @@ local runtime = require('async._runtime')
 ---
 --- Result of the task.
 --- Must use `await` to get the result.
---- @field private _result? R[]
+--- @field private _result? R[] & { n: integer }
 local Future = {}
 Future.__index = Future
 
@@ -39,18 +39,20 @@ function Future:result()
   if self._err ~= nil then
     return false, self._err
   else
+    assert(self._result)
     return true, util.unpack_len(self._result)
   end
 end
 
 --- Invoke an observer without letting its error escape through completion.
 --- @private
---- @param callback fun(err?: any, ...: any)
+--- @param callback fun(err?: any, ...: R...)
 function Future:_invoke(callback)
   local ok, traceback = xpcall(function()
     if self._err ~= nil then
       callback(self._err)
     else
+      assert(self._result)
       callback(nil, util.unpack_len(self._result))
     end
   end, function(err)
@@ -73,7 +75,7 @@ end
 --- called immediately with the results.
 --- Callback errors are reported through the runtime scheduler with their
 --- traceback. Other observers still run and the Future's result is unchanged.
---- @param callback fun(err?: any, ...: any)
+--- @param callback fun(err?: any, ...: R...)
 --- @return fun() unsubscribe
 function Future:on_complete(callback)
   if self:completed() then
@@ -100,7 +102,7 @@ end
 ---
 --- This will trigger any callbacks that are waiting on the Future.
 --- @param err? any
---- @param ... any result
+--- @param ... R... result
 function Future:complete(err, ...)
   if self:completed() then
     error('Future is already completed', 2)
@@ -125,8 +127,7 @@ end
 ---
 --- A Future is a low-level awaitable that is not intended to be used in
 --- application-level code.
---- @generic R
---- @return vim.async.Future<R>
+--- @return vim.async.Future<any>
 return function()
   return setmetatable({
     _callbacks = {},
