@@ -82,19 +82,10 @@ local function strip_block(text, start_marker, end_marker, replacement)
   return text:sub(1, start_idx - 1) .. replacement .. text:sub(end_idx + #end_marker)
 end
 
---- @param source string
---- @return string
-local function normalize_luals_diagnostics(source)
-  return source
-    :gsub('access%-invisible', 'invisible')
-    :gsub('param%-type%-not%-match', 'param-type-mismatch')
-end
-
 --- @param path string
 --- @param transform? fun(source: string): string
---- @param internal? boolean
 --- @return string
-local function render_source(path, transform, internal)
+local function render_source(path, transform)
   local source = read_file(path):gsub('\n$', '')
   if transform then
     source = transform(source)
@@ -102,24 +93,7 @@ local function render_source(path, transform, internal)
 
   source = source:gsub("require%('async%.", "require('vim.async.")
   source = source:gsub('require%("async%.', 'require("vim.async.')
-  source = normalize_luals_diagnostics(source)
-
-  if internal then
-    source = table.concat({
-      '-- LuaLS cannot model the generic annotations used by this vendored implementation.',
-      '---@diagnostic disable: no-unknown, undefined-doc-name, luadoc-miss-symbol, missing-return, missing-return-value, param-type-mismatch, return-type-mismatch, redundant-return-value, undefined-field, need-check-nil, await-in-sync',
-      '',
-      source,
-    }, '\n')
-  end
-
   return source .. '\n'
-end
-
---- @param source string
---- @return string
-local function strip_doc_comments(source)
-  return source:gsub('%-%-%-[^\n]*\n', '')
 end
 
 --- @param source string
@@ -197,6 +171,7 @@ local function transform_core(source)
   source = replace_once_plain(source, "local errors = require('async._errors')\n", '')
   source = replace_required_plain(source, 'errors.normalize(', 'util._normalize_error(')
   source = replace_required_plain(source, 'errors.stringify(', 'util._stringify_error(')
+  source = replace_required_plain(source, 'util.gc_fun(', 'util._gc_fun(')
   source = replace_once_plain(
     source,
     'local pack_len = util.pack_len\nlocal unpack_len = util.unpack_len\n',
@@ -304,7 +279,7 @@ local function transform_future(source)
   source = replace_required_plain(source, 'errors.stringify(', 'util._stringify_error(')
   source = replace_required_plain(source, 'util.pack_len(', 'F.pack_len(')
   source = replace_required_plain(source, 'util.unpack_len(', 'F.unpack_len(')
-  return strip_doc_comments(source)
+  return source
 end
 
 --- @param source string
@@ -334,6 +309,8 @@ local modules = {
 
 local core_util_start = '-- Generated from async.nvim/lua/async/_errors.lua: start'
 local core_util_end = '-- Generated from async.nvim/lua/async/_errors.lua: end'
+local core_util_gc_start = '-- Generated from async.nvim/lua/async/_util.lua: start'
+local core_util_gc_end = '-- Generated from async.nvim/lua/async/_util.lua: end'
 
 --- @return string
 local function render_core_util_helpers()
@@ -358,7 +335,7 @@ end
 --- @param path string
 --- @return string
 local function render_core_util(path)
-  local source = read_file(path)
+  local source = vim.uv.fs_stat(path) and read_file(path) or 'local M = {}\n\nreturn M\n'
   local helpers = render_core_util_helpers()
   local generated = core_util_start .. '\n' .. helpers .. core_util_end .. '\n'
 
@@ -374,6 +351,24 @@ local function render_core_util(path)
     source = replace_once_plain(source, 'local M = {}\n', 'local M = {}\n\n' .. generated)
   end
 
+  local gc_source = read_file('lua/async/_util.lua')
+  local gc_start = assert(gc_source:find('--- Create a function', 1, true))
+  gc_source = gc_source:sub(gc_start)
+  gc_source = replace_once_plain(gc_source, '\nreturn M\n', '')
+  gc_source = replace_once_plain(
+    gc_source,
+    'function M.gc_fun(f, gc)',
+    '--- @private\nfunction M._gc_fun(f, gc)'
+  )
+  local gc_generated = core_util_gc_start .. '\n' .. gc_source .. core_util_gc_end .. '\n'
+  if source:find(core_util_gc_start, 1, true) then
+    source = strip_block(source, core_util_gc_start, core_util_gc_end .. '\n', gc_generated)
+  else
+    assert(not source:find('function M._gc_fun(', 1, true), 'unmanaged GC helper')
+    source =
+      replace_once_plain(source, core_util_end .. '\n', core_util_end .. '\n\n' .. gc_generated)
+  end
+
   return source
 end
 
@@ -382,7 +377,7 @@ end
 local function render_module_files()
   local rendered = {}
   for _, module in ipairs(modules) do
-    rendered[#rendered + 1] = { module[1], render_source(module[2], module[3], true) }
+    rendered[#rendered + 1] = { module[1], render_source(module[2], module[3]) }
   end
   return render_source('lua/async.lua', transform_public_module), rendered
 end
@@ -448,8 +443,6 @@ local function transform_test()
   output = replace_required_plain(output, 'helpers.dedent(', 't.dedent(')
   output = output:gsub("require%('async%.", "require('vim.async.")
   output = output:gsub('require%("async%.', 'require("vim.async.')
-  output = normalize_luals_diagnostics(output)
-
   return output
 end
 

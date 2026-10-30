@@ -56,7 +56,7 @@ format-check: stylua
 format: stylua
 	./stylua $(FILES)
 
-EMMYLUA_REF := 0.23.2
+EMMYLUA_REF := 0.25.1
 EMMYLUA_OS ?= $(shell uname -s | tr '[:upper:]' '[:lower:]')
 ifneq ($(filter $(shell uname -m),x86_64 amd64),)
   EMMYLUA_ARCH := x64
@@ -65,7 +65,7 @@ else
 endif
 EMMYLUA_RELEASE_URL := https://github.com/EmmyLuaLs/emmylua-analyzer-rust/releases/download/$(EMMYLUA_REF)/emmylua_check-$(EMMYLUA_OS)-$(EMMYLUA_ARCH).tar.gz
 EMMYLUA_RELEASE_TAR := deps/emmylua_check-$(EMMYLUA_REF)-$(EMMYLUA_OS)-$(EMMYLUA_ARCH).tar.gz
-EMMYLUA_DIR := deps/emmylua
+EMMYLUA_DIR := deps/emmylua-$(EMMYLUA_REF)
 EMMYLUA_BIN := $(EMMYLUA_DIR)/emmylua_check
 
 .PHONY: emmylua
@@ -90,6 +90,7 @@ endif
 .PHONY: emmylua-check
 emmylua-check: $(EMMYLUA_BIN)
 	$(EMMYLUA_BIN) lua \
+		--warnings-as-errors \
 		--config .emmyrc.json
 
 .PHONY: doc
@@ -102,8 +103,9 @@ doc:
 
 VENDOR_NVIM_MODULES = _runtime _future _core _event _queue _semaphore
 VENDOR_NVIM_MODULE_OUTPUTS = $(addprefix build/nvim/vim/async/,$(addsuffix .lua,$(VENDOR_NVIM_MODULES)))
-VENDOR_NVIM_OUTPUTS = build/nvim/vim/async.lua $(VENDOR_NVIM_MODULE_OUTPUTS) build/nvim/async_spec.lua
-VENDOR_NVIM_INPUTS = scripts/vendor_nvim.lua lua/*.lua lua/async/*.lua test/async_spec.lua meta/*.lua
+VENDOR_NVIM_CORE_UTIL = build/nvim/vim/_core/util.lua
+VENDOR_NVIM_OUTPUTS = build/nvim/vim/async.lua $(VENDOR_NVIM_MODULE_OUTPUTS) $(VENDOR_NVIM_CORE_UTIL) build/nvim/async_spec.lua
+VENDOR_NVIM_INPUTS = Makefile scripts/vendor_nvim.lua lua/*.lua lua/async/*.lua test/async_spec.lua meta/*.lua .emmyrc.vendor.json
 
 NVIM_SOURCE_DIR ?=
 NVIM_ASYNC_DIR = $(NVIM_SOURCE_DIR)/runtime/lua/vim/async
@@ -117,9 +119,12 @@ vendor-nvim: $(VENDOR_NVIM_OUTPUTS)
 
 $(VENDOR_NVIM_OUTPUTS) &: $(VENDOR_NVIM_INPUTS) stylua $(EMMYLUA_BIN)
 	mkdir -p build/nvim
-	nvim -l scripts/vendor_nvim.lua build/nvim/vim/async.lua build/nvim/async_spec.lua
+	nvim -l scripts/vendor_nvim.lua build/nvim/vim/async.lua build/nvim/async_spec.lua $(VENDOR_NVIM_CORE_UTIL)
 	./stylua $(VENDOR_NVIM_OUTPUTS)
-	$(EMMYLUA_BIN) build/nvim/vim \
+	# Ignore tests and the obsolete single-file export at the workspace root.
+	$(EMMYLUA_BIN) build/nvim \
+		--ignore async.lua,async_spec.lua \
+		--warnings-as-errors \
 		--config .emmyrc.vendor.json
 
 .PHONY: sync-nvim

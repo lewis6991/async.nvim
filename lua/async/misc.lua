@@ -29,7 +29,7 @@ function M.join_n_1(max_jobs, funs)
     --- @cast finished -?
     for j, task in ipairs(running) do
       if task == finished then
-        running[j] = async.run(assert(funs[i]))
+        running[j] = async.run(funs[i])
         break
       end
     end

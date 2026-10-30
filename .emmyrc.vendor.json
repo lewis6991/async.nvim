@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/EmmyLuaLs/emmylua-analyzer-rust/refs/heads/main/crates/emmylua_code_analysis/resources/schema.json",
+  "$schema": "https://raw.githubusercontent.com/EmmyLuaLs/emmylua-analyzer-rust/0.25.1/crates/emmylua_code_analysis/resources/schema.json",
   "codeAction": {
     "insertSpace": true
   },

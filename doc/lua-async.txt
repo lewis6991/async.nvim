@@ -508,9 +508,15 @@ vim.async.timeout({duration}, {task})                        *async.timeout()*
     Type: `(fun(timeout: integer, predicate: fun() -> boolean) -> boolean)?`
 
 
+    Run the event loop until the predicate succeeds or the timeout expires.
+
+
 ------------------------------------------------------------------------------
 *vim.async.ConfigOpts.schedule*
     Type: `(fun(callback: fun()))?`
+
+
+    Queue a callback to run once on a later event-loop turn.
 
 
 ------------------------------------------------------------------------------
