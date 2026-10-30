@@ -3,7 +3,7 @@ export PJ_ROOT=$(PWD)
 
 FILTER ?= .*
 
-export NVIM_RUNNER_VERSION := v0.11.0
+export NVIM_RUNNER_VERSION ?= v0.11.0
 export NVIM_TEST_VERSION ?= v0.11.0
 
 ifeq ($(shell uname -s),Darwin)
