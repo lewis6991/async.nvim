@@ -296,7 +296,7 @@ do --- Task
       msg = awaiting:traceback(msg, level + 1)
     end
 
-    local tblvl = is_task(awaiting) and 2 or nil
+    local tblvl = is_task(awaiting) and 2 or 0
     local tb = debug.traceback(self._thread, '', tblvl) or ''
     msg = (msg == nil and '' or tostring(msg)) .. tb:gsub('\n\t', '\n\t' .. thread)
 
@@ -991,11 +991,11 @@ end
 --- end)
 --- ```
 ---
---- If Lua collects the callback before it is called, the task fails with
---- `"await callback was discarded"`. The failure is queued for a later
---- event-loop turn. Normal await cleanup runs before the error is delivered.
---- If cleanup fails, its error is reported instead. [vim.async.pawait()] can
---- handle this error and continue the task instead.
+--- If Lua collects the callback (because it is unreachable) before it is
+--- called, the task fails with "await callback was discarded". The failure is
+--- queued for a later event-loop turn. Normal await cleanup runs before the
+--- error is delivered. If cleanup fails, its error is reported instead.
+--- [vim.async.pawait()] can handle this error and continue the task instead.
 ---
 --- A callback held in the task's own data or returned handle remains reachable,
 --- so the wait can stay pending. GC timing is unpredictable; use [Task:close()]

@@ -9,7 +9,20 @@ on:
 
 jobs:
   test:
+    name: Test (${{ matrix.lua }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lua: luajit
+            nvim: v0.11.0
+          - lua: puc-lua
+            nvim: v0.11.0-puc
+    env:
+      XDG_DATA_HOME: ${{ github.workspace }}/deps/test-data
+      NVIM_RUNNER_VERSION: ${{ matrix.nvim }}
+      NVIM_TEST_VERSION: ${{ matrix.nvim }}
 
     steps:
       - name: Check out repository
@@ -17,6 +30,29 @@ jobs:
 
       - name: Install LuaRocks
         run: sudo apt-get update && sudo apt-get install -y luarocks
+
+      - name: Check out Neovim for PUC Lua
+        if: matrix.lua == 'puc-lua'
+        uses: actions/checkout@v4
+        with:
+          repository: neovim/neovim
+          ref: v0.11.0
+          path: deps/neovim
+
+      - name: Build Neovim with PUC Lua
+        if: matrix.lua == 'puc-lua'
+        run: |
+          sudo apt-get install -y cmake ninja-build gettext
+          make -C deps/neovim CMAKE_BUILD_TYPE=Release \
+            DEPS_CMAKE_FLAGS='-DUSE_BUNDLED_LUAJIT=OFF -DUSE_BUNDLED_LUA=ON -DUSE_BUNDLED_TS_PARSERS=OFF' \
+            CMAKE_EXTRA_FLAGS='-DPREFER_LUA=ON'
+          deps/neovim/build/bin/nvim --version | grep -F 'Lua 5.1'
+          echo "VIMRUNTIME=$GITHUB_WORKSPACE/deps/neovim/runtime" >> "$GITHUB_ENV"
+          mkdir -p "$XDG_DATA_HOME/nvim-test"
+          ln -s "$GITHUB_WORKSPACE/deps/neovim/build" \
+            "$XDG_DATA_HOME/nvim-test/nvim-runner-$NVIM_RUNNER_VERSION"
+          ln -s "$GITHUB_WORKSPACE/deps/neovim/build" \
+            "$XDG_DATA_HOME/nvim-test/nvim-test-$NVIM_TEST_VERSION"
 
       - name: Set up nvim-test
         run: make nvim-test
